@@ -5,6 +5,7 @@ import type { Issue } from "../src/github.js";
 import {
 	attemptsMarker,
 	buildQueue,
+	decidePreClaim,
 	getAttempts,
 	getLatestLease,
 	isEligible,
@@ -71,6 +72,25 @@ test("buildQueue skips issues whose branch has an open PR", () => {
 		buildQueue(issues, DEFAULT_CONFIG, new Set([1, 3])).map((i) => i.number),
 		[2],
 	);
+});
+
+test("decidePreClaim refuses when an open PR already exists for the branch", () => {
+	// Simulates search-API lag: the scan missed a fresh PR, but the
+	// authoritative per-branch check found it — the issue must not be re-claimed.
+	const decision = decidePreClaim("gloop/issue-6", [20]);
+	assert.equal(decision.claim, false);
+	assert.match((decision as { claim: false; reason: string }).reason, /#20/);
+	assert.match((decision as { claim: false; reason: string }).reason, /gloop\/issue-6/);
+});
+
+test("decidePreClaim lists every open PR in the reason", () => {
+	const decision = decidePreClaim("gloop/issue-6", [20, 22]);
+	assert.equal(decision.claim, false);
+	assert.match((decision as { claim: false; reason: string }).reason, /#20, #22/);
+});
+
+test("decidePreClaim allows claiming when no open PR exists", () => {
+	assert.deepEqual(decidePreClaim("gloop/issue-6", []), { claim: true });
 });
 
 test("leaseMarker round-trips through getLatestLease", () => {

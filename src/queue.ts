@@ -56,6 +56,23 @@ export function buildQueue(issues: Issue[], config: GloopConfig, linkedPrIssues?
 	return sortQueue(issues.filter((i) => isEligible(i, config, linkedPrIssues)));
 }
 
+export type PreClaimDecision = { claim: true } | { claim: false; reason: string };
+
+/**
+ * Authoritative pre-claim check. The bulk linked-PR exclusion rides GitHub's
+ * search API, which is eventually consistent — a PR opened seconds ago can be
+ * missing from scan results, so an issue could be re-picked and re-worked.
+ * Given the open PRs for the issue's work branch (from the read-after-write
+ * consistent REST list endpoint), decide whether claiming is still safe.
+ */
+export function decidePreClaim(branch: string, openPrNumbers: readonly number[]): PreClaimDecision {
+	if (openPrNumbers.length > 0) {
+		const prs = openPrNumbers.map((n) => `#${n}`).join(", ");
+		return { claim: false, reason: `open PR ${prs} already exists for branch ${branch}` };
+	}
+	return { claim: true };
+}
+
 const ATTEMPTS_RE = /<!--\s*gloop:attempts=(\d+)\s*-->/;
 
 /** Attempts survive gloop restarts via a hidden marker in issue comments. */
