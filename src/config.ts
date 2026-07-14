@@ -18,6 +18,8 @@ export interface GloopConfig {
 	maxMinutesPerIssue: number;
 	/** Attempts before an issue is labeled gloop:needs-human. */
 	maxAttempts: number;
+	/** Minutes before a gloop:in-progress lease is considered stale and reclaimed. */
+	leaseTtlMinutes: number;
 	/** Max follow-up issues filed per worked issue. */
 	maxFollowUps: number;
 	/** Per-run budgets. */
@@ -34,6 +36,7 @@ export const DEFAULT_CONFIG: GloopConfig = {
 	maxCostPerIssue: 5,
 	maxMinutesPerIssue: 30,
 	maxAttempts: 2,
+	leaseTtlMinutes: 60,
 	maxFollowUps: 5,
 	maxIssuesPerRun: Number.POSITIVE_INFINITY,
 	maxCostPerRun: Number.POSITIVE_INFINITY,

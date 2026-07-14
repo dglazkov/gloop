@@ -51,6 +51,10 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
   agent codes.
 - Failures bump a per-issue attempt counter (hidden comment marker); after
   `--max-attempts` the issue is labeled `gloop:needs-human` and skipped.
+- Claims are leases: a hidden comment marker timestamps each claim, and issues
+  stuck in `gloop:in-progress` by a crashed run are reclaimed after
+  `leaseTtlMinutes` (default 60). Startup also resets any leftover work branch
+  or dirty tree back to the default branch.
 - `gloop:next` label jumps the queue; `priority:critical|high|medium|low`
   (or `P0`–`P3`) labels order it; FIFO breaks ties.
 - Stop gracefully with Ctrl+C (finishes current issue) or `touch .gloop/STOP`.
@@ -69,6 +73,7 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
   "maxCostPerIssue": 5,
   "maxMinutesPerIssue": 30,
   "maxAttempts": 2,
+  "leaseTtlMinutes": 60,
   "maxFollowUps": 5
 }
 ```
