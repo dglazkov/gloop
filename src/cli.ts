@@ -7,6 +7,7 @@ import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, recordFailure } from "./land.js";
 import { buildQueue, getAttempts, issuePriority } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
+import { getVersion } from "./version.js";
 import { runWorker, type WorkResult } from "./worker.js";
 
 const HELP = `gloop — GitHub-issue-powered agent loop
@@ -29,6 +30,7 @@ Options:
   --max-cost <usd>          max total cost this run
   --max-turns <n>           max agent turns per issue
   --max-attempts <n>        attempts before gloop:needs-human
+  -v, --version             show version
   -h, --help                show this help
 `;
 
@@ -98,6 +100,11 @@ function parseArgs(argv: string[]): CliArgs {
 			case "-h":
 			case "--help":
 				console.log(HELP);
+				process.exit(0);
+				break;
+			case "-v":
+			case "--version":
+				console.log(getVersion());
 				process.exit(0);
 				break;
 			default:
