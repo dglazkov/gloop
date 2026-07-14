@@ -53,6 +53,35 @@ const FORBIDDEN_BASH: Array<{ re: RegExp; reason: string }> = [
 ];
 
 const GLOOP_CONFIG_PATH_RE = /(^|[\\/])\.gloop([\\/.]|$)/;
+/** Like GLOOP_CONFIG_PATH_RE, but also matches paths embedded in a shell command (after whitespace). */
+const GLOOP_CONFIG_IN_COMMAND_RE = /(^|[\s\\/])\.gloop([\\/.]|\s|$)/;
+
+/**
+ * Check a bash command against the guard rules.
+ * Returns a human-readable block reason, or undefined if the command is allowed.
+ */
+export function checkBashCommand(command: string): string | undefined {
+	for (const { re, reason } of FORBIDDEN_BASH) {
+		if (re.test(command)) {
+			return `gloop guard: blocked (${reason})`;
+		}
+	}
+	if (GLOOP_CONFIG_IN_COMMAND_RE.test(command) && /(>|>>|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\s+-i)/.test(command)) {
+		return "gloop guard: gloop configuration is human-only";
+	}
+	return undefined;
+}
+
+/**
+ * Check a write/edit target path against the guard rules.
+ * Returns a human-readable block reason, or undefined if the path is allowed.
+ */
+export function checkWritePath(path: string): string | undefined {
+	if (GLOOP_CONFIG_PATH_RE.test(path)) {
+		return "gloop guard: gloop configuration is human-only";
+	}
+	return undefined;
+}
 
 function guardExtension(): InlineExtension {
 	return {
@@ -61,14 +90,8 @@ function guardExtension(): InlineExtension {
 			pi.on("tool_call", async (event) => {
 				if (event.toolName === "bash") {
 					const command = String((event.input as { command?: string })?.command ?? "");
-					for (const { re, reason } of FORBIDDEN_BASH) {
-						if (re.test(command)) {
-							return { block: true, reason: `gloop guard: blocked (${reason})` };
-						}
-					}
-					if (GLOOP_CONFIG_PATH_RE.test(command) && /(>|>>|\btee\b|\brm\b|\bmv\b|\bcp\b|\bsed\s+-i)/.test(command)) {
-						return { block: true, reason: "gloop guard: gloop configuration is human-only" };
-					}
+					const reason = checkBashCommand(command);
+					if (reason) return { block: true, reason };
 				}
 				if (event.toolName === "write" || event.toolName === "edit") {
 					const p = String(
@@ -76,9 +99,8 @@ function guardExtension(): InlineExtension {
 							(event.input as { file_path?: string })?.file_path ??
 							"",
 					);
-					if (GLOOP_CONFIG_PATH_RE.test(p)) {
-						return { block: true, reason: "gloop guard: gloop configuration is human-only" };
-					}
+					const reason = checkWritePath(p);
+					if (reason) return { block: true, reason };
 				}
 				return undefined;
 			});
