@@ -23,6 +23,13 @@ test("isEligible filters gloop state labels", () => {
 	assert.equal(isEligible(issue(4, [LABELS.inProgress]), DEFAULT_CONFIG), false);
 });
 
+test("isEligible excludes issues with an open linked PR", () => {
+	const linked = new Set([2]);
+	assert.equal(isEligible(issue(1), DEFAULT_CONFIG, linked), true);
+	assert.equal(isEligible(issue(2), DEFAULT_CONFIG, linked), false);
+	assert.equal(isEligible(issue(2), DEFAULT_CONFIG), true);
+});
+
 test("isEligible honors label restriction", () => {
 	const config = { ...DEFAULT_CONFIG, label: "agent-ok" };
 	assert.equal(isEligible(issue(1, ["agent-ok"]), config), true);
@@ -45,6 +52,14 @@ test("buildQueue filters and sorts", () => {
 	assert.deepEqual(
 		buildQueue(issues, DEFAULT_CONFIG).map((i) => i.number),
 		[2, 3],
+	);
+});
+
+test("buildQueue skips issues whose branch has an open PR", () => {
+	const issues = [issue(1, ["priority:critical"]), issue(2, ["priority:high"]), issue(3)];
+	assert.deepEqual(
+		buildQueue(issues, DEFAULT_CONFIG, new Set([1, 3])).map((i) => i.number),
+		[2],
 	);
 });
 

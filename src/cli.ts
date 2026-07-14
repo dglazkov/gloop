@@ -226,7 +226,11 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 
 		let target: number | undefined = args.issue;
 		if (target === undefined) {
-			const queue = buildQueue(await github.listOpenIssues(cwd), config);
+			const [issues, linkedPrIssues] = await Promise.all([
+				github.listOpenIssues(cwd),
+				github.listIssueNumbersWithLinkedPr(cwd),
+			]);
+			const queue = buildQueue(issues, config, linkedPrIssues);
 			if (queue.length === 0) {
 				info(worked === 0 ? "no eligible open issues" : `queue empty · worked ${worked} issue(s) · ${formatCost(totalCost)}`);
 				break;
@@ -258,14 +262,22 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 
 async function commandStatus(args: CliArgs, cwd: string): Promise<void> {
 	const config = { ...loadConfig(cwd), ...args.overrides };
-	const issues = await github.listOpenIssues(cwd);
-	const queue = buildQueue(issues, config);
+	const [issues, linkedPrIssues] = await Promise.all([
+		github.listOpenIssues(cwd),
+		github.listIssueNumbersWithLinkedPr(cwd),
+	]);
+	const queue = buildQueue(issues, config, linkedPrIssues);
 	const byLabel = (label: string) => issues.filter((i) => i.labels.includes(label));
 
 	console.log(c.bold("queue:"));
 	if (queue.length === 0) console.log(c.dim("  (empty)"));
 	for (const [i, iss] of queue.entries()) {
 		console.log(`  ${i + 1}. #${iss.number} [p${issuePriority(iss)}] ${iss.title}`);
+	}
+	const awaitingMerge = issues.filter((i) => linkedPrIssues.has(i.number));
+	if (awaitingMerge.length > 0) {
+		console.log(c.bold("awaiting PR merge:"));
+		for (const iss of awaitingMerge) console.log(`  #${iss.number} ${iss.title}`);
 	}
 	for (const [name, label] of [
 		["in progress", LABELS.inProgress],

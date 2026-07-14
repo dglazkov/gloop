@@ -59,6 +59,21 @@ export async function listOpenIssues(cwd: string): Promise<Issue[]> {
 	}));
 }
 
+/**
+ * Numbers of open issues that have a linked pull request (closing reference).
+ * GitHub drops the link when a PR is closed without merging, so this
+ * effectively means "an open PR is already in flight for this issue".
+ */
+export async function listIssueNumbersWithLinkedPr(cwd: string): Promise<Set<number>> {
+	const out = await run(
+		"gh",
+		["issue", "list", "--state", "open", "--search", "linked:pr", "--limit", "500", "--json", "number"],
+		{ cwd },
+	);
+	const raw = JSON.parse(out) as Array<{ number: number }>;
+	return new Set(raw.map((r) => r.number));
+}
+
 export async function viewIssue(cwd: string, num: number): Promise<IssueDetail> {
 	const out = await run(
 		"gh",
