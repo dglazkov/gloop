@@ -23,12 +23,14 @@ export function issuePriority(issue: Issue): number {
 	return best ?? DEFAULT_PRIORITY;
 }
 
-export function isEligible(issue: Issue, config: GloopConfig): boolean {
+export function isEligible(issue: Issue, config: GloopConfig, linkedPrIssues?: ReadonlySet<number>): boolean {
 	const labels = issue.labels;
 	if (labels.includes(LABELS.blocked)) return false;
 	if (labels.includes(LABELS.needsHuman)) return false;
 	if (labels.includes(LABELS.inProgress)) return false;
 	if (config.label && !labels.includes(config.label)) return false;
+	// An open linked PR means work already landed and is awaiting merge; re-picking would duplicate it.
+	if (linkedPrIssues?.has(issue.number)) return false;
 	return true;
 }
 
@@ -50,8 +52,8 @@ export function sortQueue(issues: Issue[]): Issue[] {
 	});
 }
 
-export function buildQueue(issues: Issue[], config: GloopConfig): Issue[] {
-	return sortQueue(issues.filter((i) => isEligible(i, config)));
+export function buildQueue(issues: Issue[], config: GloopConfig, linkedPrIssues?: ReadonlySet<number>): Issue[] {
+	return sortQueue(issues.filter((i) => isEligible(i, config, linkedPrIssues)));
 }
 
 const ATTEMPTS_RE = /<!--\s*gloop:attempts=(\d+)\s*-->/;
