@@ -122,12 +122,14 @@ async function preflight(cwd: string, config: GloopConfig): Promise<{ defaultBra
 	if (!(await git.isGitRepo(cwd))) throw new Error("Not a git repository.");
 	await github.checkGhAuth(cwd);
 	const repo = await github.getRepoInfo(cwd);
-	// Recover from a crashed run: a leftover gloop work branch or a dirty tree
-	// means the previous run never reached its cleanup; reset to the default branch.
+	// Recover from a crashed run: a leftover gloop work branch means the previous
+	// run never reached its cleanup; reset to the default branch. Never auto-reset
+	// any other branch — a dirty tree there is human work, so refuse to run.
 	const branch = await git.currentBranch(cwd);
-	const onWorkBranch = branch.startsWith(config.branchPrefix);
-	if (onWorkBranch || !(await git.isCleanTree(cwd))) {
-		warn(`recovering from a previous run (${onWorkBranch ? `leftover branch ${branch}` : "dirty tree"}); resetting to ${repo.defaultBranch}`);
+	const recovery = git.decidePreflightRecovery(branch, await git.isCleanTree(cwd), config.branchPrefix);
+	if (recovery.action === "error") throw new Error(recovery.message);
+	if (recovery.action === "recover") {
+		warn(`recovering from a previous run (${recovery.reason}); resetting to ${repo.defaultBranch}`);
 		await git.abandonBranch(cwd, branch, repo.defaultBranch);
 	}
 	await github.ensureLabels(cwd);
