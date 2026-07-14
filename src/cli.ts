@@ -5,7 +5,7 @@ import { type GloopConfig, LABELS, loadConfig } from "./config.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, recordFailure } from "./land.js";
-import { buildQueue, getAttempts, issuePriority } from "./queue.js";
+import { buildQueue, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
 import { getVersion } from "./version.js";
 import { runWorker, type WorkResult } from "./worker.js";
@@ -118,15 +118,32 @@ function stopRequested(cwd: string): boolean {
 	return fs.existsSync(path.join(cwd, ".gloop", "STOP"));
 }
 
-async function preflight(cwd: string): Promise<{ defaultBranch: string }> {
+async function preflight(cwd: string, config: GloopConfig): Promise<{ defaultBranch: string }> {
 	if (!(await git.isGitRepo(cwd))) throw new Error("Not a git repository.");
 	await github.checkGhAuth(cwd);
 	const repo = await github.getRepoInfo(cwd);
-	if (!(await git.isCleanTree(cwd))) {
-		throw new Error("Working tree is dirty. Commit or stash your changes first.");
+	// Recover from a crashed run: a leftover gloop work branch or a dirty tree
+	// means the previous run never reached its cleanup; reset to the default branch.
+	const branch = await git.currentBranch(cwd);
+	const onWorkBranch = branch.startsWith(config.branchPrefix);
+	if (onWorkBranch || !(await git.isCleanTree(cwd))) {
+		warn(`recovering from a previous run (${onWorkBranch ? `leftover branch ${branch}` : "dirty tree"}); resetting to ${repo.defaultBranch}`);
+		await git.abandonBranch(cwd, branch, repo.defaultBranch);
 	}
 	await github.ensureLabels(cwd);
 	return { defaultBranch: repo.defaultBranch };
+}
+
+/** Un-wedge issues left gloop:in-progress by a crashed run once their lease expires. */
+async function reclaimStaleLeases(issues: github.Issue[], config: GloopConfig, cwd: string): Promise<void> {
+	for (const issue of issues) {
+		if (!issue.labels.includes(LABELS.inProgress)) continue;
+		const detail = await github.viewIssue(cwd, issue.number);
+		if (!isLeaseStale(detail.comments, config.leaseTtlMinutes)) continue;
+		warn(`#${issue.number}: lease older than ${config.leaseTtlMinutes}m; reclaiming`);
+		await github.removeLabels(cwd, issue.number, [LABELS.inProgress]);
+		issue.labels = issue.labels.filter((l) => l !== LABELS.inProgress);
+	}
 }
 
 async function workOneIssue(
@@ -142,7 +159,10 @@ async function workOneIssue(
 	banner(`#${issue.number}: ${issue.title}`);
 	info(`attempt ${attempts + 1}/${config.maxAttempts} · branch ${branch}`);
 
-	// Claim (lease). Crash-safe: a human can remove the label to un-stick.
+	// Claim (lease). The hidden marker lets future scans reclaim the issue if this
+	// run crashes; it is posted before the label so a claim without a marker is
+	// always safe to treat as stale. A human can also remove the label to un-stick.
+	await github.commentOnIssue(cwd, issue.number, `${leaseMarker()}\n🤖 gloop claimed this issue (attempt ${attempts + 1}/${config.maxAttempts}).`);
 	await github.addLabels(cwd, issue.number, [LABELS.inProgress]);
 	await git.checkoutFreshBranch(cwd, branch, defaultBranch);
 
@@ -196,7 +216,7 @@ async function workOneIssue(
 
 async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 	const config = { ...loadConfig(cwd), ...args.overrides };
-	const { defaultBranch } = await preflight(cwd);
+	const { defaultBranch } = await preflight(cwd, config);
 
 	let stopAfterCurrent = false;
 	const onSigint = () => {
@@ -230,6 +250,7 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 				github.listOpenIssues(cwd),
 				github.listIssueNumbersWithLinkedPr(cwd),
 			]);
+			await reclaimStaleLeases(issues, config, cwd);
 			const queue = buildQueue(issues, config, linkedPrIssues);
 			if (queue.length === 0) {
 				info(worked === 0 ? "no eligible open issues" : `queue empty · worked ${worked} issue(s) · ${formatCost(totalCost)}`);
