@@ -100,13 +100,28 @@ export async function landDone(
 	const prUrl = await github.createPr(cwd, branch, title, prBody);
 	info(`opened PR: ${prUrl}`);
 
+	let mergeNote = "";
 	if (config.autoMerge) {
-		const merged = await github.enableAutoMerge(cwd, prUrl);
-		if (!merged.ok) warn(`auto-merge not enabled: ${merged.message}`);
+		const merge = await github.enableAutoMerge(cwd, prUrl);
+		if (merge.hint) warn(merge.hint);
+		switch (merge.outcome) {
+			case "merged":
+				info("PR merged");
+				mergeNote = " (merged)";
+				break;
+			case "auto-merge-armed":
+				info("auto-merge armed; GitHub will merge once checks pass");
+				mergeNote = " (auto-merge armed)";
+				break;
+			case "left-open":
+				warn(`PR left open; merge it manually: ${merge.message}`);
+				mergeNote = " (left open)";
+				break;
+		}
 	}
 
 	await git.checkout(cwd, defaultBranch);
-	return { kind: "landed", detail: prUrl };
+	return { kind: "landed", detail: `${prUrl}${mergeNote}` };
 }
 
 export async function landSplit(
