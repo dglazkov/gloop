@@ -29,6 +29,12 @@ Model/auth comes from your pi setup (`~/.pi/agent`), or pass
 > are acceptable. Budgets (`--max-cost`, `--max-turns`, `--max-issues`) are
 > your friends.
 
+> **CI gating:** this repo ships a CI workflow
+> ([.github/workflows/ci.yml](./.github/workflows/ci.yml)) that runs
+> typecheck, tests, and build on PRs. Enable branch protection on `main`
+> with CI as a required status check to make gloop's auto-merge wait for CI
+> to pass instead of merging immediately.
+
 ## How it works
 
 ```
