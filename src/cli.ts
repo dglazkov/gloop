@@ -5,7 +5,7 @@ import { type GloopConfig, LABELS, loadConfig } from "./config.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, recordFailure } from "./land.js";
-import { buildQueue, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
+import { buildQueue, decidePreClaim, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
 import { getVersion } from "./version.js";
 import { runWorker, type WorkResult } from "./worker.js";
@@ -158,6 +158,16 @@ async function workOneIssue(
 	const attempts = getAttempts(issue.comments);
 	const branch = `${config.branchPrefix}${issue.number}`;
 
+	// Authoritative pre-claim check: the scan's linked-PR exclusion uses GitHub's
+	// eventually consistent search API, so a PR landed seconds ago may not show up
+	// yet. The REST-backed pr list is read-after-write consistent; if an open PR
+	// already exists for this branch, claiming would duplicate the work.
+	const preClaim = decidePreClaim(branch, await github.listOpenPrNumbersForBranch(cwd, branch));
+	if (!preClaim.claim) {
+		info(`#${issue.number}: skipping — ${preClaim.reason}`);
+		return { kind: "skipped" };
+	}
+
 	banner(`#${issue.number}: ${issue.title}`);
 	info(`attempt ${attempts + 1}/${config.maxAttempts} · branch ${branch}`);
 
@@ -230,6 +240,9 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 
 	let worked = 0;
 	let totalCost = 0;
+	// Issues gloop has already handled this run (PR landed or open PR detected).
+	// The search-based scan exclusion lags fresh PRs, so track them locally too.
+	const handledThisRun = new Set<number>();
 
 	while (true) {
 		if (stopAfterCurrent) break;
@@ -253,7 +266,8 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 				github.listIssueNumbersWithLinkedPr(cwd),
 			]);
 			await reclaimStaleLeases(issues, config, cwd);
-			const queue = buildQueue(issues, config, linkedPrIssues);
+			const excluded = new Set([...linkedPrIssues, ...handledThisRun]);
+			const queue = buildQueue(issues, config, excluded);
 			if (queue.length === 0) {
 				info(worked === 0 ? "no eligible open issues" : `queue empty · worked ${worked} issue(s) · ${formatCost(totalCost)}`);
 				break;
@@ -272,8 +286,15 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 		}
 
 		const { kind, result } = await workOneIssue(target, config, cwd, defaultBranch);
+		if (kind === "skipped") {
+			// An open PR already exists; exclude the issue from later scans this run.
+			handledThisRun.add(target);
+			if (args.once) break;
+			continue;
+		}
 		worked += 1;
 		totalCost += result?.cost ?? 0;
+		if (kind === "landed") handledThisRun.add(target);
 
 		if (kind === "aborted") break;
 		if (args.once) break;

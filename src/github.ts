@@ -63,6 +63,10 @@ export async function listOpenIssues(cwd: string): Promise<Issue[]> {
  * Numbers of open issues that have a linked pull request (closing reference).
  * GitHub drops the link when a PR is closed without merging, so this
  * effectively means "an open PR is already in flight for this issue".
+ *
+ * Backed by GitHub's search API, which is eventually consistent: a PR opened
+ * seconds ago may be missing. Use only as a cheap bulk pre-filter; claim
+ * decisions must also pass the authoritative listOpenPrNumbersForBranch check.
  */
 export async function listIssueNumbersWithLinkedPr(cwd: string): Promise<Set<number>> {
 	const out = await run(
@@ -72,6 +76,17 @@ export async function listIssueNumbersWithLinkedPr(cwd: string): Promise<Set<num
 	);
 	const raw = JSON.parse(out) as Array<{ number: number }>;
 	return new Set(raw.map((r) => r.number));
+}
+
+/**
+ * Numbers of open PRs whose head is the given branch. Backed by the REST
+ * list endpoint (not search), so it is read-after-write consistent — safe to
+ * use as an authoritative pre-claim check, unlike listIssueNumbersWithLinkedPr.
+ */
+export async function listOpenPrNumbersForBranch(cwd: string, branch: string): Promise<number[]> {
+	const out = await run("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "number"], { cwd });
+	const raw = JSON.parse(out) as Array<{ number: number }>;
+	return raw.map((r) => r.number);
 }
 
 export async function viewIssue(cwd: string, num: number): Promise<IssueDetail> {
