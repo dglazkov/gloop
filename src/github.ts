@@ -1,5 +1,5 @@
 import { LABEL_DEFS } from "./config.js";
-import { exec, run } from "./exec.js";
+import { exec, type ExecResult, run } from "./exec.js";
 
 export interface Issue {
 	number: number;
@@ -134,13 +134,95 @@ export async function createPr(cwd: string, branch: string, title: string, body:
 	return match ? match[0] : out;
 }
 
-export async function enableAutoMerge(cwd: string, prUrl: string): Promise<{ ok: boolean; message?: string }> {
-	const result = await exec("gh", ["pr", "merge", prUrl, "--auto", "--squash"], { cwd });
-	if (result.code !== 0) {
-		// Repos without auto-merge enabled or without required checks reject --auto.
-		return { ok: false, message: result.stderr.trim() || result.stdout.trim() };
+export type AutoMergeErrorKind = "clean-status" | "auto-merge-disallowed" | "unknown";
+
+/**
+ * Classify why `gh pr merge --auto` failed, from its stderr/stdout.
+ *
+ * Observed failures:
+ * - `GraphQL: Pull request Pull request is in clean status (enablePullRequestAutoMerge)`
+ *   — nothing is pending, so GitHub refuses to arm auto-merge; a direct merge works.
+ * - `GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)`
+ *   — the repo's "Allow auto-merge" setting is off.
+ */
+export function classifyAutoMergeError(output: string): AutoMergeErrorKind {
+	if (/pull request is in clean status/i.test(output)) return "clean-status";
+	if (/auto[- ]?merge is not allowed for this repository/i.test(output)) return "auto-merge-disallowed";
+	return "unknown";
+}
+
+export interface MergeResult {
+	/**
+	 * merged: the PR was merged directly.
+	 * auto-merge-armed: GitHub will merge once checks pass.
+	 * left-open: neither worked; a human must merge.
+	 */
+	outcome: "merged" | "auto-merge-armed" | "left-open";
+	message?: string;
+	/** Actionable advice (e.g. enable the repo's auto-merge setting). */
+	hint?: string;
+}
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function tryDirectMerge(cwd: string, prUrl: string): Promise<ExecResult> {
+	return exec("gh", ["pr", "merge", prUrl, "--squash"], { cwd });
+}
+
+async function autoMergeDisallowedHint(cwd: string): Promise<string> {
+	let repo = "{owner}/{repo}";
+	try {
+		repo = (await getRepoInfo(cwd)).nameWithOwner;
+	} catch {
+		// keep the placeholder
 	}
-	return { ok: true };
+	return `auto-merge is not allowed for this repository; enable it with \`gh api -X PATCH repos/${repo} -F allow_auto_merge=true\``;
+}
+
+/**
+ * Merge a PR as soon as permitted. Tries `gh pr merge --auto --squash` first;
+ * falls back to a direct merge when auto-merge is refused (clean status, or
+ * the repo has auto-merge disabled — in that case polling briefly in case
+ * checks are still registering).
+ */
+export async function enableAutoMerge(
+	cwd: string,
+	prUrl: string,
+	opts: { pollTimeoutMs?: number; pollIntervalMs?: number } = {},
+): Promise<MergeResult> {
+	const auto = await exec("gh", ["pr", "merge", prUrl, "--auto", "--squash"], { cwd });
+	if (auto.code === 0) return { outcome: "auto-merge-armed" };
+
+	const error = auto.stderr.trim() || auto.stdout.trim();
+	const kind = classifyAutoMergeError(error);
+
+	if (kind === "clean-status") {
+		// Nothing pending: "merge as soon as permitted" means now.
+		const direct = await tryDirectMerge(cwd, prUrl);
+		if (direct.code === 0) return { outcome: "merged" };
+		return { outcome: "left-open", message: direct.stderr.trim() || direct.stdout.trim() };
+	}
+
+	if (kind === "auto-merge-disallowed") {
+		const hint = await autoMergeDisallowedHint(cwd);
+		// Poll a direct merge briefly in case checks are still registering.
+		const timeoutMs = opts.pollTimeoutMs ?? 120_000;
+		const intervalMs = opts.pollIntervalMs ?? 10_000;
+		const deadline = Date.now() + timeoutMs;
+		let lastError = error;
+		for (;;) {
+			const direct = await tryDirectMerge(cwd, prUrl);
+			if (direct.code === 0) return { outcome: "merged", hint };
+			lastError = direct.stderr.trim() || direct.stdout.trim();
+			if (Date.now() + intervalMs > deadline) break;
+			await sleep(intervalMs);
+		}
+		return { outcome: "left-open", message: lastError, hint };
+	}
+
+	return { outcome: "left-open", message: error };
 }
 
 /** Idempotently create gloop's state-machine labels. */
