@@ -27,7 +27,7 @@ Options:
   --model <spec>            pi model, e.g. anthropic/claude-opus-4-5:high
   --direct                  commit to the default branch instead of a PR
   --auto-merge / --no-auto-merge   enable/disable PR auto-merge (default: on)
-  --verify <cmd>            verification command (default: auto-detect npm test)
+  --verify <cmd>            verification command (default: auto-detect npm test/typecheck/lint)
   --max-issues <n>          max issues this run
   --max-cost <usd>          max total cost this run
   --max-turns <n>           max agent turns per issue

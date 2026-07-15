@@ -16,28 +16,42 @@ export interface LandOutcome {
 	prUrl?: string;
 }
 
+/** Auto-detect verify commands from package.json scripts: test, typecheck, lint (in that order). */
+export function detectVerifyCommands(pkgJson: string): string[] {
+	const commands: string[] = [];
+	try {
+		const pkg = JSON.parse(pkgJson);
+		if (pkg.scripts?.test) commands.push("npm test");
+		if (pkg.scripts?.typecheck) commands.push("npm run typecheck");
+		if (pkg.scripts?.lint) commands.push("npm run lint");
+	} catch {
+		// unparseable package.json: nothing detected
+	}
+	return commands;
+}
+
+/** Resolve which verify commands to run: verifyCommands > verifyCommand > auto-detect. */
+export function resolveVerifyCommands(config: GloopConfig, cwd: string): string[] {
+	if (config.verifyCommands && config.verifyCommands.length > 0) return config.verifyCommands;
+	if (config.verifyCommand) return [config.verifyCommand];
+	const pkgPath = path.join(cwd, "package.json");
+	if (!fs.existsSync(pkgPath)) return [];
+	return detectVerifyCommands(fs.readFileSync(pkgPath, "utf8"));
+}
+
 /** Trust but verify: independently re-run the test suite before landing. */
 export async function verify(config: GloopConfig, cwd: string): Promise<{ ok: boolean; command?: string }> {
-	let command = config.verifyCommand;
-	if (!command) {
-		// Auto-detect: npm test if package.json declares a test script.
-		const pkgPath = path.join(cwd, "package.json");
-		if (fs.existsSync(pkgPath)) {
-			try {
-				const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-				if (pkg.scripts?.test) command = "npm test";
-			} catch {
-				// fall through
-			}
-		}
-	}
-	if (!command) {
+	const commands = resolveVerifyCommands(config, cwd);
+	if (commands.length === 0) {
 		warn("no verify command configured or detected; skipping independent verification");
 		return { ok: true };
 	}
-	info(`verifying: ${c.bold(command)}`);
-	const code = await runShellInherit(command, cwd);
-	return { ok: code === 0, command };
+	for (const command of commands) {
+		info(`verifying: ${c.bold(command)}`);
+		const code = await runShellInherit(command, cwd);
+		if (code !== 0) return { ok: false, command };
+	}
+	return { ok: true };
 }
 
 function runSummary(result: WorkResult): string {

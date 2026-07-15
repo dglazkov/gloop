@@ -10,8 +10,10 @@ export interface GloopConfig {
 	direct: boolean;
 	/** Enable GitHub auto-merge on created PRs (default true). */
 	autoMerge: boolean;
-	/** Command to verify the agent's work. Undefined = auto-detect (npm test). */
+	/** Command to verify the agent's work. Superseded by verifyCommands; kept for back-compat. */
 	verifyCommand?: string;
+	/** Commands to verify the agent's work, run in order. Undefined = auto-detect (npm test / typecheck / lint). */
+	verifyCommands?: string[];
 	/** Per-issue budgets. */
 	maxTurnsPerIssue: number;
 	maxCostPerIssue: number;
