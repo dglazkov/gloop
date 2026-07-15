@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { ConsecutiveFailureBreaker } from "./breaker.js";
 import { type GloopConfig, LABELS, loadConfig } from "./config.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
@@ -226,6 +227,41 @@ async function workOneIssue(
 	}
 }
 
+/**
+ * Best-effort recovery after workOneIssue threw: make sure the tree is back on
+ * the default branch, the in-progress label is gone, and a failed attempt is
+ * recorded so attempt tracking / gloop:needs-human escalation still works.
+ * Every step is independently fenced — recovery must never throw.
+ */
+async function recoverFromCrashedIssue(
+	issueNumber: number,
+	reason: string,
+	config: GloopConfig,
+	cwd: string,
+	defaultBranch: string,
+): Promise<void> {
+	const branch = `${config.branchPrefix}${issueNumber}`;
+	try {
+		if (!(await git.isCleanTree(cwd)) || (await git.currentBranch(cwd)) !== defaultBranch) {
+			await git.abandonBranch(cwd, branch, defaultBranch);
+		}
+	} catch (err) {
+		warn(`#${issueNumber}: branch cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+	}
+	try {
+		await github.removeLabels(cwd, issueNumber, [LABELS.inProgress]);
+	} catch {
+		// Label may never have been added; stale leases are reclaimed on later scans anyway.
+	}
+	try {
+		const issue = await github.viewIssue(cwd, issueNumber);
+		const attempts = getAttempts(issue.comments);
+		await recordFailure(issue, `unexpected error: ${reason}`, { cost: 0, turns: 0 }, attempts, config, cwd);
+	} catch (err) {
+		warn(`#${issueNumber}: could not record failed attempt: ${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
 async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 	const config = { ...loadConfig(cwd), ...args.overrides };
 	const { defaultBranch } = await preflight(cwd, config);
@@ -240,6 +276,9 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 
 	let worked = 0;
 	let totalCost = 0;
+	// Stop the run if consecutive issues die with unexpected exceptions — that
+	// smells systemic (auth, network, disk), not issue-specific.
+	const breaker = new ConsecutiveFailureBreaker(2);
 	// Issues gloop has already handled this run (PR landed or open PR detected).
 	// The search-based scan exclusion lags fresh PRs, so track them locally too.
 	const handledThisRun = new Set<number>();
@@ -285,7 +324,23 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 			return;
 		}
 
-		const { kind, result } = await workOneIssue(target, config, cwd, defaultBranch);
+		let kind: string;
+		let result: WorkResult | undefined;
+		try {
+			({ kind, result } = await workOneIssue(target, config, cwd, defaultBranch));
+			breaker.recordSuccess();
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			error(`#${target}: unexpected error — ${reason}`);
+			await recoverFromCrashedIssue(target, reason, config, cwd, defaultBranch);
+			worked += 1;
+			if (breaker.recordFailure()) {
+				error("two consecutive issues failed with unexpected errors; stopping the run");
+				break;
+			}
+			if (args.once) break;
+			continue;
+		}
 		if (kind === "skipped") {
 			// An open PR already exists; exclude the issue from later scans this run.
 			handledThisRun.add(target);

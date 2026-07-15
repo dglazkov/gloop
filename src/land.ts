@@ -95,7 +95,13 @@ export async function landDone(
 	}
 
 	await git.commitAll(cwd, `${title}\n\n${report.summary}`);
-	await git.pushBranch(cwd, branch);
+	const push = await git.pushBranch(cwd, branch);
+	if (!push.ok) {
+		if (push.reason === "non-fast-forward") {
+			return { kind: "failed", detail: `branch ${branch} already exists remotely — likely duplicate work` };
+		}
+		return { kind: "failed", detail: `git push failed: ${push.detail}` };
+	}
 	const prBody = `Fixes #${issue.number}\n\n${report.summary}${testsNote}${followUpNote}${footer}`;
 	const prUrl = await github.createPr(cwd, branch, title, prBody);
 	info(`opened PR: ${prUrl}`);

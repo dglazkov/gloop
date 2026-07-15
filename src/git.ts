@@ -54,8 +54,29 @@ export async function commitAll(cwd: string, message: string): Promise<void> {
 	await run("git", ["commit", "-m", message], { cwd });
 }
 
-export async function pushBranch(cwd: string, branch: string): Promise<void> {
-	await run("git", ["push", "-u", "origin", branch], { cwd });
+export type PushOutcome =
+	| { ok: true }
+	| { ok: false; reason: "non-fast-forward" | "unknown"; detail: string };
+
+/**
+ * Classify a failed `git push` from its stderr. A rejected non-fast-forward
+ * push means the branch already exists remotely with different history —
+ * almost always duplicate work from a previous run, not a transient error.
+ */
+export function classifyPushError(stderr: string): "non-fast-forward" | "unknown" {
+	const s = stderr.toLowerCase();
+	if (s.includes("non-fast-forward") || s.includes("fetch first") || s.includes("[rejected]")) {
+		return "non-fast-forward";
+	}
+	return "unknown";
+}
+
+/** Push a branch. Never throws; returns a structured outcome so one bad push cannot kill the run. */
+export async function pushBranch(cwd: string, branch: string): Promise<PushOutcome> {
+	const result = await exec("git", ["push", "-u", "origin", branch], { cwd });
+	if (result.code === 0) return { ok: true };
+	const detail = (result.stderr || result.stdout).trim();
+	return { ok: false, reason: classifyPushError(detail), detail };
 }
 
 export async function checkout(cwd: string, branch: string): Promise<void> {
