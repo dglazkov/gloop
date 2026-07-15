@@ -118,3 +118,28 @@ export function isLeaseStale(comments: IssueComment[], ttlMinutes: number, now: 
 	if (lease === undefined) return true;
 	return now.getTime() - lease.getTime() > ttlMinutes * 60_000;
 }
+
+export type LeaseReclaimDecision =
+	| { action: "keep" }
+	/** Remove the gloop:in-progress label on GitHub and locally. */
+	| { action: "reclaim" }
+	/** Dry run: update the in-memory labels only (so the printed queue matches a real run) — no GitHub write. */
+	| { action: "simulate" };
+
+/**
+ * Decide how to handle a gloop:in-progress claim whose lease may be stale.
+ * Dry-run is strictly read-only: a stale lease is reclaimed locally so the
+ * queue printout reflects what a real run would pick, without the label
+ * removal on GitHub.
+ */
+export function decideLeaseReclaim(
+	labels: readonly string[],
+	comments: IssueComment[],
+	ttlMinutes: number,
+	dryRun: boolean,
+	now: Date = new Date(),
+): LeaseReclaimDecision {
+	if (!labels.includes(LABELS.inProgress)) return { action: "keep" };
+	if (!isLeaseStale(comments, ttlMinutes, now)) return { action: "keep" };
+	return dryRun ? { action: "simulate" } : { action: "reclaim" };
+}

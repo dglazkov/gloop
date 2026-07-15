@@ -5,6 +5,7 @@ import type { Issue } from "../src/github.js";
 import {
 	attemptsMarker,
 	buildQueue,
+	decideLeaseReclaim,
 	decidePreClaim,
 	getAttempts,
 	getLatestLease,
@@ -132,6 +133,33 @@ test("isLeaseStale: newest lease wins over older expired ones", () => {
 test("isLeaseStale: a claim without any lease marker is stale", () => {
 	assert.equal(isLeaseStale([], 60), true);
 	assert.equal(isLeaseStale([{ author: "gloop", body: attemptsMarker(1), createdAt: "" }], 60), true);
+});
+
+test("decideLeaseReclaim: keeps issues without the in-progress label", () => {
+	assert.deepEqual(decideLeaseReclaim([], [], 60, false), { action: "keep" });
+	assert.deepEqual(decideLeaseReclaim(["priority:high"], [], 60, true), { action: "keep" });
+});
+
+test("decideLeaseReclaim: keeps a fresh lease", () => {
+	const now = new Date("2024-06-01T12:00:00Z");
+	const comments = [{ author: "gloop", body: leaseMarker(new Date("2024-06-01T11:30:00Z")), createdAt: "" }];
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], comments, 60, false, now), { action: "keep" });
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], comments, 60, true, now), { action: "keep" });
+});
+
+test("decideLeaseReclaim: reclaims a stale lease (GitHub write) outside dry-run", () => {
+	const now = new Date("2024-06-01T12:00:00Z");
+	const comments = [{ author: "gloop", body: leaseMarker(new Date("2024-06-01T10:00:00Z")), createdAt: "" }];
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], comments, 60, false, now), { action: "reclaim" });
+	// A claim without any lease marker is stale too.
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], [], 60, false, now), { action: "reclaim" });
+});
+
+test("decideLeaseReclaim: dry-run simulates the reclaim locally — no GitHub write", () => {
+	const now = new Date("2024-06-01T12:00:00Z");
+	const comments = [{ author: "gloop", body: leaseMarker(new Date("2024-06-01T10:00:00Z")), createdAt: "" }];
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], comments, 60, true, now), { action: "simulate" });
+	assert.deepEqual(decideLeaseReclaim([LABELS.inProgress], [], 60, true, now), { action: "simulate" });
 });
 
 test("getAttempts parses hidden markers, takes max", () => {
