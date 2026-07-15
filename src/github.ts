@@ -149,7 +149,11 @@ export async function createPr(cwd: string, branch: string, title: string, body:
 	return match ? match[0] : out;
 }
 
-export type AutoMergeErrorKind = "clean-status" | "auto-merge-disallowed" | "unknown";
+export type AutoMergeErrorKind =
+	| "clean-status"
+	| "no-protection-rules"
+	| "auto-merge-disallowed"
+	| "unknown";
 
 /**
  * Classify why `gh pr merge --auto` failed, from its stderr/stdout.
@@ -157,11 +161,14 @@ export type AutoMergeErrorKind = "clean-status" | "auto-merge-disallowed" | "unk
  * Observed failures:
  * - `GraphQL: Pull request Pull request is in clean status (enablePullRequestAutoMerge)`
  *   — nothing is pending, so GitHub refuses to arm auto-merge; a direct merge works.
+ * - `GraphQL: Pull request Protected branch rules not configured for this branch (enablePullRequestAutoMerge)`
+ *   — no branch protection means nothing to wait for; a direct merge works.
  * - `GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)`
  *   — the repo's "Allow auto-merge" setting is off.
  */
 export function classifyAutoMergeError(output: string): AutoMergeErrorKind {
 	if (/pull request is in clean status/i.test(output)) return "clean-status";
+	if (/protected branch rules not configured for this branch/i.test(output)) return "no-protection-rules";
 	if (/auto[- ]?merge is not allowed for this repository/i.test(output)) return "auto-merge-disallowed";
 	return "unknown";
 }
@@ -176,6 +183,8 @@ export interface MergeResult {
 	message?: string;
 	/** Actionable advice (e.g. enable the repo's auto-merge setting). */
 	hint?: string;
+	/** How the auto-merge failure was classified (set when outcome is left-open). */
+	classification?: AutoMergeErrorKind;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -198,9 +207,10 @@ async function autoMergeDisallowedHint(cwd: string): Promise<string> {
 
 /**
  * Merge a PR as soon as permitted. Tries `gh pr merge --auto --squash` first;
- * falls back to a direct merge when auto-merge is refused (clean status, or
- * the repo has auto-merge disabled — in that case polling briefly in case
- * checks are still registering).
+ * always falls back to a direct merge attempt when auto-merge is refused
+ * (clean status, no branch protection rules, unknown errors, or the repo has
+ * auto-merge disabled — in that case polling briefly in case checks are
+ * still registering).
  */
 export async function enableAutoMerge(
 	cwd: string,
@@ -213,11 +223,15 @@ export async function enableAutoMerge(
 	const error = auto.stderr.trim() || auto.stdout.trim();
 	const kind = classifyAutoMergeError(error);
 
-	if (kind === "clean-status") {
+	if (kind === "clean-status" || kind === "no-protection-rules") {
 		// Nothing pending: "merge as soon as permitted" means now.
 		const direct = await tryDirectMerge(cwd, prUrl);
 		if (direct.code === 0) return { outcome: "merged" };
-		return { outcome: "left-open", message: direct.stderr.trim() || direct.stdout.trim() };
+		return {
+			outcome: "left-open",
+			message: direct.stderr.trim() || direct.stdout.trim(),
+			classification: kind,
+		};
 	}
 
 	if (kind === "auto-merge-disallowed") {
@@ -234,10 +248,19 @@ export async function enableAutoMerge(
 			if (Date.now() + intervalMs > deadline) break;
 			await sleep(intervalMs);
 		}
-		return { outcome: "left-open", message: lastError, hint };
+		return { outcome: "left-open", message: lastError, hint, classification: kind };
 	}
 
-	return { outcome: "left-open", message: error };
+	// Unknown failure: still attempt a direct merge before giving up — the PR
+	// may be mergeable even though auto-merge could not be armed.
+	const direct = await tryDirectMerge(cwd, prUrl);
+	if (direct.code === 0) return { outcome: "merged" };
+	const directError = direct.stderr.trim() || direct.stdout.trim();
+	return {
+		outcome: "left-open",
+		message: `auto-merge failed: ${error}; direct merge failed: ${directError}`,
+		classification: kind,
+	};
 }
 
 /** Idempotently create a label. */

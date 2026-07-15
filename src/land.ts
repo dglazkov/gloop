@@ -136,7 +136,9 @@ export async function landDone(
 				mergeNote = " (auto-merge armed)";
 				break;
 			case "left-open":
-				warn(`PR left open; merge it manually: ${merge.message}`);
+				warn(
+					`PR left open (classified: ${merge.classification ?? "unknown"}); merge it manually: ${merge.message}`,
+				);
 				mergeNote = " (left open)";
 				break;
 		}
