@@ -12,6 +12,8 @@ import type { WorkReport, WorkResult } from "./worker.js";
 export interface LandOutcome {
 	kind: "landed" | "split" | "blocked" | "failed";
 	detail: string;
+	/** Set when landing opened a pull request. */
+	prUrl?: string;
 }
 
 /** Trust but verify: independently re-run the test suite before landing. */
@@ -127,7 +129,7 @@ export async function landDone(
 	}
 
 	await git.checkout(cwd, defaultBranch);
-	return { kind: "landed", detail: `${prUrl}${mergeNote}` };
+	return { kind: "landed", detail: `${prUrl}${mergeNote}`, prUrl };
 }
 
 export async function landSplit(

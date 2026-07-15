@@ -5,7 +5,8 @@ import { ConsecutiveFailureBreaker } from "./breaker.js";
 import { type GloopConfig, LABELS, loadConfig } from "./config.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
-import { landBlocked, landDone, landSplit, recordFailure } from "./land.js";
+import { landBlocked, landDone, landSplit, type LandOutcome, recordFailure } from "./land.js";
+import { appendRun, readRuns, type RunRecord, totalCost } from "./ledger.js";
 import { buildQueue, decidePreClaim, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
 import { getVersion } from "./version.js";
@@ -185,7 +186,7 @@ async function workOneIssue(
 
 		info(`agent finished · ${result.turns} turns · ${formatCost(result.cost)}`);
 
-		let outcome;
+		let outcome: LandOutcome | { kind: "aborted"; detail: string; prUrl?: undefined };
 		if (result.abortedBy === "signal") {
 			outcome = { kind: "aborted" as const, detail: "interrupted by user" };
 			await git.abandonBranch(cwd, branch, defaultBranch);
@@ -217,6 +218,16 @@ async function workOneIssue(
 
 		const color = outcome.kind === "landed" || outcome.kind === "split" ? c.green : outcome.kind === "failed" ? c.red : c.yellow;
 		info(`outcome: ${color(outcome.kind)} — ${outcome.detail}`);
+		appendRun(cwd, {
+			timestamp: new Date().toISOString(),
+			issue: issue.number,
+			kind: outcome.kind,
+			detail: outcome.detail,
+			turns: result.turns,
+			cost: result.cost,
+			sessionId: result.sessionId,
+			prUrl: outcome.prUrl,
+		});
 		return { kind: outcome.kind, result };
 	} finally {
 		await github.removeLabels(cwd, issue.number, [LABELS.inProgress]);
@@ -260,6 +271,14 @@ async function recoverFromCrashedIssue(
 	} catch (err) {
 		warn(`#${issueNumber}: could not record failed attempt: ${err instanceof Error ? err.message : String(err)}`);
 	}
+	appendRun(cwd, {
+		timestamp: new Date().toISOString(),
+		issue: issueNumber,
+		kind: "failed",
+		detail: `unexpected error: ${reason}`,
+		turns: 0,
+		cost: 0,
+	});
 }
 
 async function commandRun(args: CliArgs, cwd: string): Promise<void> {
@@ -389,6 +408,24 @@ async function commandStatus(args: CliArgs, cwd: string): Promise<void> {
 			for (const iss of list) console.log(`  #${iss.number} ${iss.title}`);
 		}
 	}
+
+	const runs = readRuns(cwd);
+	if (runs.length > 0) {
+		console.log(c.bold(`recent runs (last ${Math.min(runs.length, RECENT_RUNS)} of ${runs.length}):`));
+		for (const run of runs.slice(-RECENT_RUNS)) {
+			console.log(`  ${formatRun(run)}`);
+		}
+		console.log(c.bold("lifetime cost:") + ` ${formatCost(totalCost(runs))} across ${runs.length} run(s)`);
+	}
+}
+
+const RECENT_RUNS = 10;
+
+function formatRun(run: RunRecord): string {
+	const when = run.timestamp.replace("T", " ").slice(0, 16);
+	const color = run.kind === "landed" || run.kind === "split" ? c.green : run.kind === "failed" ? c.red : c.yellow;
+	const extra = run.prUrl ? ` ${c.dim(run.prUrl)}` : ` ${c.dim(run.detail)}`;
+	return `${c.dim(when)}  #${run.issue} ${color(run.kind)} ${formatCost(run.cost)}${extra}`;
 }
 
 async function main(): Promise<void> {
