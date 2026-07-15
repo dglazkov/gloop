@@ -4,16 +4,25 @@ import { exec, run } from "./exec.js";
  * Decide how preflight should handle the current branch/tree state.
  * Pure decision logic: only branches gloop itself created (branchPrefix) are ever
  * auto-reset; a dirty tree anywhere else is a hard error so we never destroy
- * work gloop did not create.
+ * work gloop did not create. In dry-run mode recovery is never performed —
+ * dry-run must be strictly read-only — so leftover state only produces a warning.
  */
 export type PreflightRecovery =
 	| { action: "none" }
 	| { action: "recover"; reason: string }
+	| { action: "warn"; reason: string }
 	| { action: "error"; message: string };
 
-export function decidePreflightRecovery(branch: string, isClean: boolean, branchPrefix: string): PreflightRecovery {
+export function decidePreflightRecovery(
+	branch: string,
+	isClean: boolean,
+	branchPrefix: string,
+	dryRun = false,
+): PreflightRecovery {
 	if (branch.startsWith(branchPrefix)) {
-		return { action: "recover", reason: `leftover branch ${branch}${isClean ? "" : " with dirty tree"}` };
+		const reason = `leftover branch ${branch}${isClean ? "" : " with dirty tree"}`;
+		if (dryRun) return { action: "warn", reason };
+		return { action: "recover", reason };
 	}
 	if (!isClean) {
 		return { action: "error", message: "Working tree is dirty. Commit or stash your changes first." };
