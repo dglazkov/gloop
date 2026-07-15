@@ -24,6 +24,8 @@ export interface GloopConfig {
 	leaseTtlMinutes: number;
 	/** Max follow-up issues filed per worked issue. */
 	maxFollowUps: number;
+	/** Suppress assistant text deltas; show only tool and lifecycle lines. */
+	quiet: boolean;
 	/** Per-run budgets. */
 	maxIssuesPerRun: number;
 	maxCostPerRun: number;
@@ -40,6 +42,7 @@ export const DEFAULT_CONFIG: GloopConfig = {
 	maxAttempts: 2,
 	leaseTtlMinutes: 60,
 	maxFollowUps: 5,
+	quiet: false,
 	maxIssuesPerRun: Number.POSITIVE_INFINITY,
 	maxCostPerRun: Number.POSITIVE_INFINITY,
 	branchPrefix: "gloop/issue-",

@@ -74,7 +74,8 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
   "maxMinutesPerIssue": 30,
   "maxAttempts": 2,
   "leaseTtlMinutes": 60,
-  "maxFollowUps": 5
+  "maxFollowUps": 5,
+  "quiet": false
 }
 ```
 

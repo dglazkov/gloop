@@ -13,7 +13,7 @@ import { Type } from "typebox";
 import type { GloopConfig } from "./config.js";
 import type { IssueDetail } from "./github.js";
 import { buildIssuePrompt, loadSystemPrompt, NUDGE_PROMPT } from "./prompts.js";
-import { c, toolLine } from "./render.js";
+import { budgetLine, c, toolLine } from "./render.js";
 
 export interface FollowUp {
 	title: string;
@@ -204,11 +204,12 @@ export async function runAgentSession(opts: AgentSessionOptions): Promise<Sessio
 		if (event.type === "turn_end") {
 			result.turns += 1;
 			if (result.turns >= config.maxTurnsPerIssue) abortWith("turns");
+			console.log(c.dim(budgetLine(result.turns, config.maxTurnsPerIssue, result.cost, config.maxCostPerIssue)));
 		}
-		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+		if (!config.quiet && event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 			process.stdout.write(c.dim(event.assistantMessageEvent.delta));
 		}
-		if (event.type === "message_end") {
+		if (!config.quiet && event.type === "message_end") {
 			const msg = event.message as { role?: string };
 			if (msg.role === "assistant") process.stdout.write("\n");
 		}
