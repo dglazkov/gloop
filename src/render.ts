@@ -48,3 +48,10 @@ export function toolLine(name: string, args: Record<string, unknown>): void {
 export function formatCost(cost: number): string {
 	return `$${cost.toFixed(2)}`;
 }
+
+/** One-line per-turn budget ticker, e.g. "turn 12/100 · $0.34/$5.00". */
+export function budgetLine(turns: number, maxTurns: number, cost: number, maxCost: number): string {
+	const turnPart = Number.isFinite(maxTurns) ? `turn ${turns}/${maxTurns}` : `turn ${turns}`;
+	const costPart = Number.isFinite(maxCost) ? `${formatCost(cost)}/${formatCost(maxCost)}` : formatCost(cost);
+	return `${turnPart} · ${costPart}`;
+}
