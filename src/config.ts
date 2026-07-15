@@ -48,16 +48,87 @@ export const DEFAULT_CONFIG: GloopConfig = {
 	branchPrefix: "gloop/issue-",
 };
 
-/** Load .gloop.json from the repo root and merge over defaults. Flags merge on top elsewhere. */
+type FieldKind = "string" | "boolean" | "positive-number" | "string-array";
+
+/** Expected shape of each valid .gloop.json key. */
+const CONFIG_FIELDS: Record<keyof GloopConfig, FieldKind> = {
+	label: "string",
+	model: "string",
+	direct: "boolean",
+	autoMerge: "boolean",
+	verifyCommand: "string",
+	verifyCommands: "string-array",
+	maxTurnsPerIssue: "positive-number",
+	maxCostPerIssue: "positive-number",
+	maxMinutesPerIssue: "positive-number",
+	maxAttempts: "positive-number",
+	leaseTtlMinutes: "positive-number",
+	maxFollowUps: "positive-number",
+	quiet: "boolean",
+	maxIssuesPerRun: "positive-number",
+	maxCostPerRun: "positive-number",
+	branchPrefix: "string",
+};
+
+const KIND_DESCRIPTIONS: Record<FieldKind, string> = {
+	string: "a non-empty string",
+	boolean: "a boolean",
+	"positive-number": "a positive number",
+	"string-array": "an array of non-empty strings",
+};
+
+function describeValue(value: unknown): string {
+	if (value === null) return "null";
+	if (Array.isArray(value)) return "an array";
+	return `${JSON.stringify(value)} (${typeof value})`;
+}
+
+function matchesKind(value: unknown, kind: FieldKind): boolean {
+	switch (kind) {
+		case "string":
+			return typeof value === "string" && value.trim() !== "";
+		case "boolean":
+			return typeof value === "boolean";
+		case "positive-number":
+			return typeof value === "number" && Number.isFinite(value) && value > 0;
+		case "string-array":
+			return Array.isArray(value) && value.every((v) => typeof v === "string" && v.trim() !== "");
+	}
+}
+
+/** Validate a parsed .gloop.json object. Throws with a friendly message naming `file` on any problem. */
+export function validateConfigFile(raw: unknown, file: string): Partial<GloopConfig> {
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+		throw new Error(`Invalid ${file}: expected a JSON object at the top level.`);
+	}
+	const validKeys = Object.keys(CONFIG_FIELDS);
+	const problems: string[] = [];
+	for (const [key, value] of Object.entries(raw)) {
+		const kind = (CONFIG_FIELDS as Record<string, FieldKind | undefined>)[key];
+		if (kind === undefined) {
+			problems.push(`Unknown key "${key}". Valid keys: ${validKeys.join(", ")}.`);
+		} else if (!matchesKind(value, kind)) {
+			problems.push(`"${key}" must be ${KIND_DESCRIPTIONS[kind]}, got ${describeValue(value)}.`);
+		}
+	}
+	if (problems.length > 0) {
+		throw new Error(`Invalid ${file}:\n  - ${problems.join("\n  - ")}`);
+	}
+	return raw as Partial<GloopConfig>;
+}
+
+/** Load .gloop.json from the repo root, validate it, and merge over defaults. Flags merge on top elsewhere. */
 export function loadConfig(cwd: string): GloopConfig {
 	const file = path.join(cwd, ".gloop.json");
 	let fromFile: Partial<GloopConfig> = {};
 	if (fs.existsSync(file)) {
+		let parsed: unknown;
 		try {
-			fromFile = JSON.parse(fs.readFileSync(file, "utf8"));
+			parsed = JSON.parse(fs.readFileSync(file, "utf8"));
 		} catch (err) {
 			throw new Error(`Failed to parse ${file}: ${err instanceof Error ? err.message : String(err)}`);
 		}
+		fromFile = validateConfigFile(parsed, file);
 	}
 	return { ...DEFAULT_CONFIG, ...fromFile };
 }
