@@ -127,16 +127,20 @@ function stopRequested(cwd: string): boolean {
 	return fs.existsSync(path.join(cwd, ".gloop", "STOP"));
 }
 
-async function preflight(cwd: string, config: GloopConfig): Promise<{ defaultBranch: string }> {
+async function preflight(cwd: string, config: GloopConfig, dryRun = false): Promise<{ defaultBranch: string }> {
 	if (!(await git.isGitRepo(cwd))) throw new Error("Not a git repository.");
 	await github.checkGhAuth(cwd);
 	const repo = await github.getRepoInfo(cwd);
 	// Recover from a crashed run: a leftover gloop work branch means the previous
 	// run never reached its cleanup; reset to the default branch. Never auto-reset
 	// any other branch — a dirty tree there is human work, so refuse to run.
+	// Dry-run is strictly read-only: leftover state only produces a warning.
 	const branch = await git.currentBranch(cwd);
-	const recovery = git.decidePreflightRecovery(branch, await git.isCleanTree(cwd), config.branchPrefix);
+	const recovery = git.decidePreflightRecovery(branch, await git.isCleanTree(cwd), config.branchPrefix, dryRun);
 	if (recovery.action === "error") throw new Error(recovery.message);
+	if (recovery.action === "warn") {
+		warn(`leftover state from a previous run (${recovery.reason}); skipping recovery (--dry-run)`);
+	}
 	if (recovery.action === "recover") {
 		warn(`recovering from a previous run (${recovery.reason}); resetting to ${repo.defaultBranch}`);
 		await git.abandonBranch(cwd, branch, repo.defaultBranch);
@@ -290,7 +294,7 @@ async function recoverFromCrashedIssue(
 
 async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 	const config = { ...loadConfig(cwd), ...args.overrides };
-	const { defaultBranch } = await preflight(cwd, config);
+	const { defaultBranch } = await preflight(cwd, config, args.dryRun);
 
 	let stopAfterCurrent = false;
 	const onSigint = () => {

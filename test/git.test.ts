@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { test } from "node:test";
-import { classifyPushError, decidePreflightRecovery } from "../src/git.js";
+import { classifyPushError, currentBranch, decidePreflightRecovery, isCleanTree } from "../src/git.js";
 
 const PREFIX = "gloop/issue-";
 
@@ -31,6 +35,50 @@ test("dirty tree on any other branch: hard error", () => {
 test("clean tree on a non-gloop branch: nothing to do", () => {
 	assert.deepEqual(decidePreflightRecovery("main", true, PREFIX), { action: "none" });
 	assert.deepEqual(decidePreflightRecovery("feature/foo", true, PREFIX), { action: "none" });
+});
+
+test("dry-run: dirty tree on a gloop work branch only warns, never recovers", () => {
+	const decision = decidePreflightRecovery("gloop/issue-42", false, PREFIX, true);
+	assert.equal(decision.action, "warn");
+	assert.match((decision as { reason: string }).reason, /gloop\/issue-42/);
+	assert.match((decision as { reason: string }).reason, /dirty tree/);
+});
+
+test("dry-run: clean tree on a gloop work branch only warns, never recovers", () => {
+	const decision = decidePreflightRecovery("gloop/issue-42", true, PREFIX, true);
+	assert.equal(decision.action, "warn");
+	assert.match((decision as { reason: string }).reason, /gloop\/issue-42/);
+});
+
+test("dry-run: non-gloop branches behave as before", () => {
+	assert.deepEqual(decidePreflightRecovery("main", true, PREFIX, true), { action: "none" });
+	assert.equal(decidePreflightRecovery("main", false, PREFIX, true).action, "error");
+});
+
+test("dry-run: dirty tree on a gloop work branch is left untouched", async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "gloop-git-test-"));
+	const g = (...args: string[]) => execFileSync("git", args, { cwd });
+	try {
+		g("init", "-b", "main");
+		g("config", "user.email", "test@example.com");
+		g("config", "user.name", "test");
+		fs.writeFileSync(path.join(cwd, "file.txt"), "original\n");
+		g("add", "-A");
+		g("commit", "-m", "init");
+		g("checkout", "-b", "gloop/issue-42");
+		fs.writeFileSync(path.join(cwd, "file.txt"), "uncommitted work\n");
+
+		// The preflight decision under --dry-run: warn only, no recovery branch.
+		const decision = decidePreflightRecovery(await currentBranch(cwd), await isCleanTree(cwd), PREFIX, true);
+		assert.equal(decision.action, "warn");
+
+		// Branch, HEAD, and the dirty tree are all untouched.
+		assert.equal(await currentBranch(cwd), "gloop/issue-42");
+		assert.equal(await isCleanTree(cwd), false);
+		assert.equal(fs.readFileSync(path.join(cwd, "file.txt"), "utf8"), "uncommitted work\n");
+	} finally {
+		fs.rmSync(cwd, { recursive: true, force: true });
+	}
 });
 
 // Captured stderr from a real rejected `git push` when gloop/issue-6 already existed remotely.
