@@ -8,7 +8,7 @@ make GitHub Issues *the* work queue, make one pi agent session *the* unit of
 work, and make a PR *the* unit of landing. If the loop is sound, the project
 should be able to build itself.
 
-## What happened (one day, ~$18)
+## What happened (about two hours, ~$18)
 
 - **Bootstrap:** pi built the M0 scaffold by hand. Its acceptance test was
   literal self-hosting: *gloop completes one issue from its own tracker.*
@@ -68,5 +68,5 @@ should be able to build itself.
 ## The number that matters
 
 From empty repo to a self-hosting, self-healing, tested, CI-gated,
-containerizable system: **one working day, 19 issues, ~$18 in tokens,
+containerizable system: **about two hours, 19 issues, ~$18 in tokens,
 and one human who mostly said "y".**
