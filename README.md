@@ -80,3 +80,7 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
 ```
 
 Override the agent's system prompt with `.gloop/PROMPT.md`.
+
+## License
+
+[Apache 2.0](LICENSE)
