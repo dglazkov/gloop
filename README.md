@@ -68,7 +68,7 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
   "label": "agent-ok",
   "model": "anthropic/claude-opus-4-5:high",
   "autoMerge": true,
-  "verifyCommand": "npm test",
+  "verifyCommands": ["npm test", "npm run typecheck", "npm run lint"],
   "maxTurnsPerIssue": 100,
   "maxCostPerIssue": 5,
   "maxMinutesPerIssue": 30,
