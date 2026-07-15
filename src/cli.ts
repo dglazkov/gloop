@@ -8,7 +8,7 @@ import * as git from "./git.js";
 import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, type LandOutcome, recordFailure } from "./land.js";
 import { appendRun, readRuns, type RunRecord, totalCost } from "./ledger.js";
-import { buildQueue, decidePreClaim, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
+import { buildQueue, decideLeaseReclaim, decidePreClaim, getAttempts, issuePriority, leaseMarker } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
 import { applyTriagePlan, planTriage, printTriagePlan, runTriage } from "./triage.js";
 import { getVersion } from "./version.js";
@@ -36,18 +36,26 @@ async function preflight(cwd: string, config: GloopConfig, dryRun = false): Prom
 		warn(`recovering from a previous run (${recovery.reason}); resetting to ${repo.defaultBranch}`);
 		await git.abandonBranch(cwd, branch, repo.defaultBranch);
 	}
-	await github.ensureLabels(cwd);
+	// Dry-run performs no GitHub writes, so no label creation either.
+	if (!dryRun) await github.ensureLabels(cwd);
 	return { defaultBranch: repo.defaultBranch };
 }
 
-/** Un-wedge issues left gloop:in-progress by a crashed run once their lease expires. */
-async function reclaimStaleLeases(issues: github.Issue[], config: GloopConfig, cwd: string): Promise<void> {
+/**
+ * Un-wedge issues left gloop:in-progress by a crashed run once their lease
+ * expires. In dry-run mode the reclaim is simulated in memory only (so the
+ * queue printout matches what a real run would pick) — no GitHub write.
+ */
+async function reclaimStaleLeases(issues: github.Issue[], config: GloopConfig, cwd: string, dryRun = false): Promise<void> {
 	for (const issue of issues) {
 		if (!issue.labels.includes(LABELS.inProgress)) continue;
 		const detail = await github.viewIssue(cwd, issue.number);
-		if (!isLeaseStale(detail.comments, config.leaseTtlMinutes)) continue;
-		warn(`#${issue.number}: lease older than ${config.leaseTtlMinutes}m; reclaiming`);
-		await github.removeLabels(cwd, issue.number, [LABELS.inProgress]);
+		const decision = decideLeaseReclaim(issue.labels, detail.comments, config.leaseTtlMinutes, dryRun);
+		if (decision.action === "keep") continue;
+		warn(
+			`#${issue.number}: lease older than ${config.leaseTtlMinutes}m; reclaiming${decision.action === "simulate" ? " (--dry-run: simulated, label left in place)" : ""}`,
+		);
+		if (decision.action === "reclaim") await github.removeLabels(cwd, issue.number, [LABELS.inProgress]);
 		issue.labels = issue.labels.filter((l) => l !== LABELS.inProgress);
 	}
 }
@@ -225,7 +233,7 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 				github.listOpenIssues(cwd),
 				github.listIssueNumbersWithLinkedPr(cwd),
 			]);
-			await reclaimStaleLeases(issues, config, cwd);
+			await reclaimStaleLeases(issues, config, cwd, args.dryRun);
 			const excluded = new Set([...linkedPrIssues, ...handledThisRun]);
 			const queue = buildQueue(issues, config, excluded);
 			if (queue.length === 0) {
