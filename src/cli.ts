@@ -9,6 +9,7 @@ import { landBlocked, landDone, landSplit, type LandOutcome, recordFailure } fro
 import { appendRun, readRuns, type RunRecord, totalCost } from "./ledger.js";
 import { buildQueue, decidePreClaim, getAttempts, isLeaseStale, issuePriority, leaseMarker } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
+import { applyTriagePlan, planTriage, printTriagePlan, runTriage } from "./triage.js";
 import { getVersion } from "./version.js";
 import { runWorker, type WorkResult } from "./worker.js";
 
@@ -17,10 +18,12 @@ const HELP = `gloop — GitHub-issue-powered agent loop
 Usage:
   gloop [options]           work the issue queue until empty or budget hit
   gloop status              show queue order and gloop-labeled issue states
-  gloop triage              (coming in M2) prioritize/decompose issues
+  gloop triage [--apply]    agent pass over open issues: propose priority labels,
+                            duplicates, and decompositions (dry-run unless --apply)
 
 Options:
   --once                    work one issue, then exit
+  --apply                   triage: apply the proposed changes via gh
   --issue <n>               work a specific issue
   --dry-run                 show what would be picked; do no work
   --label <name>            only work issues carrying this label
@@ -41,11 +44,12 @@ interface CliArgs {
 	once: boolean;
 	issue?: number;
 	dryRun: boolean;
+	apply: boolean;
 	overrides: Partial<GloopConfig>;
 }
 
 function parseArgs(argv: string[]): CliArgs {
-	const args: CliArgs = { command: "run", once: false, dryRun: false, overrides: {} };
+	const args: CliArgs = { command: "run", once: false, dryRun: false, apply: false, overrides: {} };
 	const rest = [...argv];
 	while (rest.length > 0) {
 		const arg = rest.shift() as string;
@@ -68,6 +72,9 @@ function parseArgs(argv: string[]): CliArgs {
 				break;
 			case "--dry-run":
 				args.dryRun = true;
+				break;
+			case "--apply":
+				args.apply = true;
 				break;
 			case "--label":
 				args.overrides.label = next();
@@ -419,6 +426,43 @@ async function commandStatus(args: CliArgs, cwd: string): Promise<void> {
 	}
 }
 
+async function commandTriage(args: CliArgs, cwd: string): Promise<void> {
+	const config = { ...loadConfig(cwd), ...args.overrides };
+	if (!(await git.isGitRepo(cwd))) throw new Error("Not a git repository.");
+	await github.checkGhAuth(cwd);
+
+	const all = await github.listOpenIssues(cwd);
+	const issues = config.label ? all.filter((i) => i.labels.includes(config.label as string)) : all;
+	if (issues.length === 0) {
+		info("no open issues to triage");
+		return;
+	}
+
+	banner(`triage: ${issues.length} open issue(s)${args.apply ? "" : " (dry run)"}`);
+	const result = await runTriage(issues, config, cwd);
+	info(`agent finished · ${result.turns} turns · ${formatCost(result.cost)}`);
+	if (result.errorMessage) throw new Error(`triage agent error: ${result.errorMessage}`);
+	if (result.abortedBy === "signal") {
+		warn("triage interrupted; nothing applied");
+		return;
+	}
+	if (result.abortedBy) throw new Error(`triage aborted: budget exhausted (${result.abortedBy})`);
+	if (!result.report) throw new Error("triage agent never called triage_result");
+	if (result.report.summary) info(result.report.summary);
+
+	const plan = planTriage(result.report.entries, issues, config.maxFollowUps);
+	printTriagePlan(plan);
+	if (plan.ops.length === 0) return;
+
+	if (!args.apply) {
+		info("dry run — re-run with --apply to make these changes");
+		return;
+	}
+	await github.ensureLabels(cwd); // gloop:filed for decomposition issues
+	await applyTriagePlan(plan, config, cwd);
+	info(`applied ${plan.ops.length} change(s)`);
+}
+
 const RECENT_RUNS = 10;
 
 function formatRun(run: RunRecord): string {
@@ -435,7 +479,7 @@ async function main(): Promise<void> {
 	if (args.command === "status") {
 		await commandStatus(args, cwd);
 	} else if (args.command === "triage") {
-		warn("gloop triage is coming in M2");
+		await commandTriage(args, cwd);
 	} else {
 		await commandRun(args, cwd);
 	}

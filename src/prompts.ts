@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { GloopConfig } from "./config.js";
-import type { IssueDetail } from "./github.js";
+import type { Issue, IssueDetail } from "./github.js";
 
 export const DEFAULT_SYSTEM_PROMPT = `You are gloop, an autonomous software engineering agent. You are given a single
 GitHub issue to resolve in this repository. There is NO human available: never
@@ -98,3 +98,73 @@ export function buildIssuePrompt(issue: IssueDetail, config: GloopConfig): strin
 /** One nudge if the agent stops without reporting. */
 export const NUDGE_PROMPT =
 	"You stopped without calling the report_result tool. You MUST call report_result now with the appropriate outcome (done, split, or blocked) summarizing the state of your work.";
+
+export const DEFAULT_TRIAGE_PROMPT = `You are gloop's triage agent. You are given the full list of open GitHub
+issues in this repository. Your job is to propose triage decisions — labels
+and issue hygiene — NEVER code changes. There is NO human available: never
+ask questions.
+
+This session is strictly read-only. You may read files, search the codebase,
+and run read-only git/gh commands to judge scope and priority. Any mutating
+command will be blocked.
+
+## What to decide, per issue
+
+1. **Priority**: critical | high | medium | low.
+   - critical: breakage, data loss, security, blocks all other work
+   - high: core functionality gaps, bugs affecting most users
+   - medium: valuable improvements, non-blocking bugs
+   - low: nice-to-haves, cosmetics, speculative ideas
+   Skip issues whose existing priority label is already right.
+2. **Duplicates**: if an issue substantially overlaps an earlier open issue,
+   mark it as a duplicate of that issue (prefer keeping the older/richer one).
+3. **Decomposition**: if an issue is clearly too large for a single focused
+   agent session, propose follow-up issues that decompose it. Each follow-up
+   must be self-contained: context, what to do, acceptance criteria, and code
+   pointers. Only decompose when genuinely oversized — most issues should not
+   be decomposed.
+
+## Hard rules
+
+- Never modify files, never run mutating git/gh commands. You only propose;
+  gloop applies approved changes itself.
+- Only reference issue numbers from the provided list.
+- Finish by calling the \`triage_result\` tool with one entry per issue that
+  needs a change. This is MANDATORY — it is the only valid way to finish.
+  Issues that are fine as-is need no entry.`;
+
+/** Load .gloop/TRIAGE.md override if present, else the default. */
+export function loadTriagePrompt(cwd: string): string {
+	const override = path.join(cwd, ".gloop", "TRIAGE.md");
+	if (fs.existsSync(override)) {
+		return fs.readFileSync(override, "utf8");
+	}
+	return DEFAULT_TRIAGE_PROMPT;
+}
+
+const TRIAGE_BODY_LIMIT = 2000;
+
+export function buildTriagePrompt(issues: Issue[], config: GloopConfig): string {
+	const lines: string[] = [];
+	lines.push(`Triage the ${issues.length} open issue(s) in this repository.`);
+	for (const issue of issues) {
+		lines.push("");
+		lines.push(`## Issue #${issue.number}: ${issue.title}`);
+		lines.push(`Labels: ${issue.labels.length > 0 ? issue.labels.join(", ") : "(none)"} · Created: ${issue.createdAt}`);
+		lines.push("");
+		const body = issue.body || "(no description)";
+		lines.push(body.length > TRIAGE_BODY_LIMIT ? `${body.slice(0, TRIAGE_BODY_LIMIT)}\n…(truncated)` : body);
+	}
+	lines.push("");
+	lines.push("## Budget");
+	lines.push(
+		`You have at most ${config.maxTurnsPerIssue} turns and ~${config.maxMinutesPerIssue} minutes for the whole pass. Each decomposed issue may declare at most ${config.maxFollowUps} follow-up issues. Work efficiently.`,
+	);
+	lines.push("");
+	lines.push("When finished, call the triage_result tool.");
+	return lines.join("\n");
+}
+
+/** One nudge if the triage agent stops without reporting. */
+export const TRIAGE_NUDGE_PROMPT =
+	"You stopped without calling the triage_result tool. You MUST call triage_result now with your proposed changes (an empty entries list is valid if nothing needs changing).";

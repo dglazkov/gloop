@@ -240,11 +240,14 @@ export async function enableAutoMerge(
 	return { outcome: "left-open", message: error };
 }
 
+/** Idempotently create a label. */
+export async function ensureLabel(cwd: string, name: string, color: string, description: string): Promise<void> {
+	await exec("gh", ["label", "create", name, "--color", color, "--description", description, "--force"], { cwd });
+}
+
 /** Idempotently create gloop's state-machine labels. */
 export async function ensureLabels(cwd: string): Promise<void> {
 	for (const def of LABEL_DEFS) {
-		await exec("gh", ["label", "create", def.name, "--color", def.color, "--description", def.description, "--force"], {
-			cwd,
-		});
+		await ensureLabel(cwd, def.name, def.color, def.description);
 	}
 }

@@ -29,8 +29,7 @@ export interface WorkReport {
 	blockedReason?: string;
 }
 
-export interface WorkResult {
-	report?: WorkReport;
+export interface SessionRunResult {
 	cost: number;
 	turns: number;
 	/** Set when a budget forced an abort. */
@@ -38,6 +37,10 @@ export interface WorkResult {
 	sessionFile?: string;
 	sessionId?: string;
 	errorMessage?: string;
+}
+
+export interface WorkResult extends SessionRunResult {
+	report?: WorkReport;
 }
 
 /** Commands the agent must not run: gloop owns git remote + GitHub state. */
@@ -83,29 +86,151 @@ export function checkWritePath(path: string): string | undefined {
 	return undefined;
 }
 
-function guardExtension(): InlineExtension {
+/**
+ * Build a tool_call guard extension. `checkBash` decides whether a bash
+ * command is allowed; write/edit tool calls are checked against `checkWrite`
+ * (or blocked entirely when `checkWrite` is "block-all", for read-only runs).
+ */
+export function guardExtension(
+	checkBash: (command: string) => string | undefined = checkBashCommand,
+	checkWrite: ((path: string) => string | undefined) | "block-all" = checkWritePath,
+): InlineExtension {
 	return {
 		name: "gloop-guard",
 		factory: (pi) => {
 			pi.on("tool_call", async (event) => {
 				if (event.toolName === "bash") {
 					const command = String((event.input as { command?: string })?.command ?? "");
-					const reason = checkBashCommand(command);
+					const reason = checkBash(command);
 					if (reason) return { block: true, reason };
 				}
 				if (event.toolName === "write" || event.toolName === "edit") {
+					if (checkWrite === "block-all") {
+						return { block: true, reason: "gloop guard: this session is read-only" };
+					}
 					const p = String(
 						(event.input as { path?: string; file_path?: string })?.path ??
 							(event.input as { file_path?: string })?.file_path ??
 							"",
 					);
-					const reason = checkWritePath(p);
+					const reason = checkWrite(p);
 					if (reason) return { block: true, reason };
 				}
 				return undefined;
 			});
 		},
 	};
+}
+
+type CreateSessionParams = NonNullable<Parameters<typeof createAgentSession>[0]>;
+
+export interface AgentSessionOptions {
+	cwd: string;
+	config: GloopConfig;
+	systemPrompt: string;
+	tools: CreateSessionParams["tools"];
+	customTools: CreateSessionParams["customTools"];
+	guard: InlineExtension;
+	prompt: string;
+	nudgePrompt: string;
+	/** Whether the run's result tool has been called (skips the nudge). */
+	reported: () => boolean;
+}
+
+/**
+ * Run one budgeted agent session: system prompt override, guard extension,
+ * cost/turn/time budgets, live rendering. Shared by the fix worker and triage.
+ */
+export async function runAgentSession(opts: AgentSessionOptions): Promise<SessionRunResult> {
+	const { cwd, config } = opts;
+	const authStorage = AuthStorage.create();
+	const modelRegistry = ModelRegistry.create(authStorage);
+
+	let model;
+	let thinkingLevel;
+	if (config.model) {
+		const resolved = resolveCliModel({ cliModel: config.model, modelRegistry });
+		if (resolved.error) throw new Error(resolved.error);
+		model = resolved.model;
+		thinkingLevel = resolved.thinkingLevel;
+	}
+
+	const resourceLoader = new DefaultResourceLoader({
+		cwd,
+		agentDir: getAgentDir(),
+		systemPromptOverride: () => opts.systemPrompt,
+		extensionFactories: [opts.guard],
+	});
+	await resourceLoader.reload();
+
+	const { session } = await createAgentSession({
+		cwd,
+		model,
+		thinkingLevel,
+		authStorage,
+		modelRegistry,
+		resourceLoader,
+		tools: opts.tools,
+		customTools: opts.customTools,
+		sessionManager: SessionManager.create(cwd),
+	});
+
+	const result: SessionRunResult = { cost: 0, turns: 0 };
+	result.sessionFile = session.sessionFile;
+	result.sessionId = session.sessionId;
+
+	let abortedBy: SessionRunResult["abortedBy"];
+	const abortWith = (reason: NonNullable<SessionRunResult["abortedBy"]>) => {
+		if (abortedBy) return;
+		abortedBy = reason;
+		void session.abort();
+	};
+
+	const deadline = setTimeout(() => abortWith("time"), config.maxMinutesPerIssue * 60 * 1000);
+	const onSigint = () => abortWith("signal");
+	process.on("SIGINT", onSigint);
+
+	const unsubscribe = session.subscribe((event) => {
+		if (event.type === "tool_execution_start") {
+			toolLine(event.toolName, event.args ?? {});
+		}
+		if (event.type === "message_end") {
+			const msg = event.message as { role?: string; usage?: { cost?: { total?: number } } };
+			if (msg.role === "assistant" && msg.usage?.cost?.total) {
+				result.cost += msg.usage.cost.total;
+				if (result.cost >= config.maxCostPerIssue) abortWith("cost");
+			}
+		}
+		if (event.type === "turn_end") {
+			result.turns += 1;
+			if (result.turns >= config.maxTurnsPerIssue) abortWith("turns");
+		}
+		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+			process.stdout.write(c.dim(event.assistantMessageEvent.delta));
+		}
+		if (event.type === "message_end") {
+			const msg = event.message as { role?: string };
+			if (msg.role === "assistant") process.stdout.write("\n");
+		}
+	});
+
+	try {
+		await session.prompt(opts.prompt);
+		if (!opts.reported() && !abortedBy) {
+			// One nudge: the model stopped without reporting.
+			await session.prompt(opts.nudgePrompt);
+		}
+	} catch (err) {
+		result.errorMessage = err instanceof Error ? err.message : String(err);
+	} finally {
+		clearTimeout(deadline);
+		process.removeListener("SIGINT", onSigint);
+		unsubscribe();
+		session.dispose();
+	}
+
+	result.abortedBy = abortedBy;
+	return result;
 }
 
 export async function runWorker(issue: IssueDetail, config: GloopConfig, cwd: string): Promise<WorkResult> {
@@ -162,93 +287,17 @@ export async function runWorker(issue: IssueDetail, config: GloopConfig, cwd: st
 		},
 	});
 
-	const authStorage = AuthStorage.create();
-	const modelRegistry = ModelRegistry.create(authStorage);
-
-	let model;
-	let thinkingLevel;
-	if (config.model) {
-		const resolved = resolveCliModel({ cliModel: config.model, modelRegistry });
-		if (resolved.error) throw new Error(resolved.error);
-		model = resolved.model;
-		thinkingLevel = resolved.thinkingLevel;
-	}
-
-	const resourceLoader = new DefaultResourceLoader({
+	const result = await runAgentSession({
 		cwd,
-		agentDir: getAgentDir(),
-		systemPromptOverride: () => loadSystemPrompt(cwd),
-		extensionFactories: [guardExtension()],
-	});
-	await resourceLoader.reload();
-
-	const { session } = await createAgentSession({
-		cwd,
-		model,
-		thinkingLevel,
-		authStorage,
-		modelRegistry,
-		resourceLoader,
+		config,
+		systemPrompt: loadSystemPrompt(cwd),
 		tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "report_result"],
 		customTools: [reportTool],
-		sessionManager: SessionManager.create(cwd),
+		guard: guardExtension(),
+		prompt: buildIssuePrompt(issue, config),
+		nudgePrompt: NUDGE_PROMPT,
+		reported: () => report !== undefined,
 	});
 
-	const result: WorkResult = { cost: 0, turns: 0 };
-	result.sessionFile = session.sessionFile;
-	result.sessionId = session.sessionId;
-
-	let abortedBy: WorkResult["abortedBy"];
-	const abortWith = (reason: NonNullable<WorkResult["abortedBy"]>) => {
-		if (abortedBy) return;
-		abortedBy = reason;
-		void session.abort();
-	};
-
-	const deadline = setTimeout(() => abortWith("time"), config.maxMinutesPerIssue * 60 * 1000);
-	const onSigint = () => abortWith("signal");
-	process.on("SIGINT", onSigint);
-
-	const unsubscribe = session.subscribe((event) => {
-		if (event.type === "tool_execution_start") {
-			toolLine(event.toolName, event.args ?? {});
-		}
-		if (event.type === "message_end") {
-			const msg = event.message as { role?: string; usage?: { cost?: { total?: number } } };
-			if (msg.role === "assistant" && msg.usage?.cost?.total) {
-				result.cost += msg.usage.cost.total;
-				if (result.cost >= config.maxCostPerIssue) abortWith("cost");
-			}
-		}
-		if (event.type === "turn_end") {
-			result.turns += 1;
-			if (result.turns >= config.maxTurnsPerIssue) abortWith("turns");
-		}
-		if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-			process.stdout.write(c.dim(event.assistantMessageEvent.delta));
-		}
-		if (event.type === "message_end") {
-			const msg = event.message as { role?: string };
-			if (msg.role === "assistant") process.stdout.write("\n");
-		}
-	});
-
-	try {
-		await session.prompt(buildIssuePrompt(issue, config));
-		if (!report && !abortedBy) {
-			// One nudge: the model stopped without reporting.
-			await session.prompt(NUDGE_PROMPT);
-		}
-	} catch (err) {
-		result.errorMessage = err instanceof Error ? err.message : String(err);
-	} finally {
-		clearTimeout(deadline);
-		process.removeListener("SIGINT", onSigint);
-		unsubscribe();
-		session.dispose();
-	}
-
-	result.report = report;
-	result.abortedBy = abortedBy;
-	return result;
+	return { ...result, report };
 }
