@@ -29,6 +29,43 @@ Model/auth comes from your pi setup (`~/.pi/agent`), or pass
 > are acceptable. Budgets (`--max-cost`, `--max-turns`, `--max-issues`) are
 > your friends.
 
+## Running in Docker
+
+gloop ships a reference [Dockerfile](./Dockerfile) (node 22 + git + gh CLI)
+so runs are sandboxed away from your machine:
+
+```bash
+docker build -t gloop .
+```
+
+Run it against a repo checkout mounted at `/repo`, passing GitHub auth as
+`GH_TOKEN` and model auth as your provider's API key env var:
+
+```bash
+docker run --rm -it \
+  -v /path/to/target-repo:/repo \
+  -e GH_TOKEN="$(gh auth token)" \
+  -e ANTHROPIC_API_KEY \
+  gloop --dry-run
+```
+
+Drop `--dry-run` (or use `--once`, `--issue 42`, etc.) to do real work.
+
+- **Repo mount:** the container's entrypoint is `node dist/cli.js` with
+  working directory `/repo`, so mount the target repo checkout there
+  (`-v /path/to/target-repo:/repo`). The image trusts the mounted repo
+  (`safe.directory`) and provides a fallback git identity for commits.
+  Note that gloop's startup recovery may reset a dirty tree or leftover
+  work branch in the mounted checkout, so mount a dedicated clone rather
+  than a checkout with uncommitted work.
+- **GitHub auth:** the gh CLI picks up `GH_TOKEN` (grab yours with
+  `gh auth token`, or use a fine-grained PAT with repo + PR + issue write
+  access). The image wires git's credential helper to gh, so pushes work
+  with the same token.
+- **Model auth:** pass your provider's key env var (`-e ANTHROPIC_API_KEY`,
+  `-e OPENAI_API_KEY`, ...) or mount your pi config read-only:
+  `-v ~/.pi/agent:/root/.pi/agent:ro`.
+
 > **CI gating:** this repo ships a CI workflow
 > ([.github/workflows/ci.yml](./.github/workflows/ci.yml)) that runs
 > typecheck, tests, and build on PRs. Enable branch protection on `main`

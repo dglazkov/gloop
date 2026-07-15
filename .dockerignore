@@ -1,0 +1,10 @@
+.git
+.github
+.gloop
+dist
+node_modules
+test
+*.log
+Dockerfile
+README.md
+PROPOSAL.md
