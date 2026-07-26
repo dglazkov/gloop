@@ -1,6 +1,7 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { type GloopConfig, LABELS } from "./config.js";
+import { CHECKLIST_MARKER } from "./epic.js";
 import * as github from "./github.js";
 import type { IssueDetail } from "./github.js";
 import { buildDesignPrompt, DESIGN_NUDGE_PROMPT, loadDesignPrompt } from "./prompts.js";
@@ -100,7 +101,7 @@ export function planSubIssues(
 
 /** Epic checklist comment: filed sub-issues in order, plus unfiled overflow as plain text. */
 export function buildChecklistComment(filed: number[], overflow: string[]): string {
-	const lines = ["🧩 Decomposed into:", "", ...filed.map((n) => `- [ ] #${n}`)];
+	const lines = [CHECKLIST_MARKER, "", ...filed.map((n) => `- [ ] #${n}`)];
 	if (overflow.length > 0) {
 		lines.push("", "Additional work beyond the follow-up cap (not filed — a human should file these):");
 		lines.push(...overflow.map((t) => `- ${t}`));
