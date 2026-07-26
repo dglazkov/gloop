@@ -111,8 +111,7 @@ export function buildChecklistComment(filed: number[], overflow: string[]): stri
 
 /**
  * Why a finished design session counts as a failed attempt, or undefined on
- * success. A design that declares zero sub-issues is a failure (mirrors
- * landSplit's "no follow-ups" check).
+ * success. A design that declares zero sub-issues is a failure.
  */
 export function designFailureReason(result: DesignResult): string | undefined {
 	if (result.abortedBy && result.abortedBy !== "signal") return `budget exhausted (${result.abortedBy})`;

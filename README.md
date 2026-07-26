@@ -82,7 +82,7 @@ scan issues → filter/sort → claim (gloop:in-progress) → branch gloop/issue
 ```
 
 - The agent must finish by calling `report_result` with `done`, `split`
-  (decompose into follow-ups), or `blocked`.
+  (escalate to a `gloop:design` design session), or `blocked`.
 - A guard extension blocks the agent from pushing, merging, touching GitHub
   issue/PR state, or editing gloop's own configuration — gloop lands, the
   agent codes.

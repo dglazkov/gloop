@@ -35,13 +35,16 @@ coherent, shippable slice well. Describe the remaining work as follow-up
 issues in \`report_result.followUps\` — each must be self-contained: context,
 what to do, acceptance criteria, and pointers to relevant code. Do NOT file
 issues yourself with \`gh issue create\`; declare them via report_result.
+Small residual work still goes in \`report_result.followUps\` on a \`done\`
+outcome.
 
 ## Outcomes
 
 - \`done\`: work is complete and verified. Provide a clear summary (it becomes
   the pull request body) and what tests you ran.
-- \`split\`: you did NOT change code because the issue must be decomposed
-  first. Provide follow-up issues covering all of it.
+- \`split\`: you did NOT change code because this issue needs a design pass
+  before implementation — report your findings and rough decomposition;
+  gloop will run a dedicated design session.
 - \`blocked\`: you cannot proceed (missing credentials, ambiguous product
   requirements, contradictory constraints). Explain in blockedReason. Never
   guess at product decisions.

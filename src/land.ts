@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type GloopConfig, LABELS } from "./config.js";
+import { getDepth } from "./design.js";
 import { runShellInherit } from "./exec.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
@@ -148,24 +149,80 @@ export async function landDone(
 	return { kind: "landed", detail: `${prUrl}${mergeNote}`, prUrl };
 }
 
+export type SplitEscalationPlan =
+	| { action: "fail"; reason: string }
+	| { action: "escalate"; label: string; comment: string; detail: string };
+
+/** The worker's notes and rough decomposition, rendered as input for the design session. */
+export function buildSplitComment(report: WorkReport): string {
+	const lines = [
+		"↪️ gloop: worker escalated this issue for a design pass. Its notes and rough decomposition below are input, not the plan.",
+	];
+	if (report.summary.trim() !== "") {
+		lines.push("", report.summary.trim());
+	}
+	if (report.followUps.length > 0) {
+		lines.push("", "Proposed decomposition:", "");
+		for (const fu of report.followUps) {
+			const body = fu.body
+				.split("\n")
+				.map((l) => `  ${l}`.trimEnd())
+				.join("\n");
+			lines.push(`- **${fu.title}**`, body);
+		}
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Decide how to escalate a worker split. Pure. A split is not a decomposition
+ * of its own: the issue stays open and gets routed to a design session
+ * (gloop:design). Exceptions: an epic in the worker path is a routing bug, and
+ * a designed sub-issue (depth marker present) that splits again still looks
+ * like an epic — both go to a human instead.
+ */
+export function planSplitEscalation(issue: IssueDetail, report: WorkReport): SplitEscalationPlan {
+	if (report.followUps.length === 0 && report.summary.trim() === "") {
+		return { action: "fail", reason: "agent reported split with no findings (no follow-ups and empty summary)" };
+	}
+	const notes = buildSplitComment(report);
+	if (issue.labels.includes(LABELS.epic)) {
+		return {
+			action: "escalate",
+			label: LABELS.needsHuman,
+			comment: `${notes}\n\n⚠️ This issue carries \`${LABELS.epic}\` — a worker should never have picked it. This indicates a routing bug; marking \`${LABELS.needsHuman}\`.`,
+			detail: "escalated to human (worker picked an epic — routing bug)",
+		};
+	}
+	if (getDepth(issue.body) > 0) {
+		return {
+			action: "escalate",
+			label: LABELS.needsHuman,
+			comment: `${notes}\n\n⚠️ This issue was already produced by a design session, yet a worker split it again. A designed sub-issue that still looks like an epic needs a human; marking \`${LABELS.needsHuman}\`.`,
+			detail: "escalated to human (designed sub-issue split again)",
+		};
+	}
+	return {
+		action: "escalate",
+		label: LABELS.design,
+		comment: notes,
+		detail: "escalated to design session",
+	};
+}
+
 export async function landSplit(
 	issue: IssueDetail,
 	report: WorkReport,
 	result: WorkResult,
-	config: GloopConfig,
 	cwd: string,
 ): Promise<LandOutcome> {
-	if (report.followUps.length === 0) {
-		return { kind: "failed", detail: "agent reported split but declared no follow-up issues" };
+	const plan = planSplitEscalation(issue, report);
+	if (plan.action === "fail") {
+		return { kind: "failed", detail: plan.reason };
 	}
-	const filed = await fileFollowUps(report, issue, config, cwd);
-	const list = filed.map((n) => `- #${n}`).join("\n");
-	await github.closeIssue(
-		cwd,
-		issue.number,
-		`Decomposed into smaller issues:\n\n${list}\n\n${report.summary}\n\n---\n🤖 gloop · ${runSummary(result)}`,
-	);
-	return { kind: "split", detail: `decomposed into ${filed.length} issue(s)` };
+	await github.addLabels(cwd, issue.number, [plan.label]);
+	await github.commentOnIssue(cwd, issue.number, `${plan.comment}\n\n---\n🤖 gloop · ${runSummary(result)}`);
+	return { kind: "split", detail: plan.detail };
 }
 
 export async function landBlocked(
