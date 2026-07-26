@@ -12,6 +12,7 @@ import {
 import { Type } from "typebox";
 import type { GloopConfig } from "./config.js";
 import type { IssueDetail } from "./github.js";
+import { type ObsContext, recordObsEvent } from "./obslog.js";
 import { buildIssuePrompt, loadSystemPrompt, NUDGE_PROMPT } from "./prompts.js";
 import { budgetLine, c, toolLine } from "./render.js";
 
@@ -86,14 +87,21 @@ export function checkWritePath(path: string): string | undefined {
 	return undefined;
 }
 
+/** Observation sink for the guard: where and as whom to log blocks. */
+export interface GuardObs extends ObsContext {
+	cwd: string;
+}
+
 /**
  * Build a tool_call guard extension. `checkBash` decides whether a bash
  * command is allowed; write/edit tool calls are checked against `checkWrite`
  * (or blocked entirely when `checkWrite` is "block-all", for read-only runs).
+ * When `obs` is given, every block is persisted to .gloop/observe.jsonl.
  */
 export function guardExtension(
 	checkBash: (command: string) => string | undefined = checkBashCommand,
 	checkWrite: ((path: string) => string | undefined) | "block-all" = checkWritePath,
+	obs?: GuardObs,
 ): InlineExtension {
 	return {
 		name: "gloop-guard",
@@ -102,19 +110,27 @@ export function guardExtension(
 				if (event.toolName === "bash") {
 					const command = String((event.input as { command?: string })?.command ?? "");
 					const reason = checkBash(command);
-					if (reason) return { block: true, reason };
+					if (reason) {
+						if (obs) recordObsEvent(obs.cwd, obs, "guard-block", `${command} — ${reason}`);
+						return { block: true, reason };
+					}
 				}
 				if (event.toolName === "write" || event.toolName === "edit") {
-					if (checkWrite === "block-all") {
-						return { block: true, reason: "gloop guard: this session is read-only" };
-					}
 					const p = String(
 						(event.input as { path?: string; file_path?: string })?.path ??
 							(event.input as { file_path?: string })?.file_path ??
 							"",
 					);
+					if (checkWrite === "block-all") {
+						const reason = "gloop guard: this session is read-only";
+						if (obs) recordObsEvent(obs.cwd, obs, "write-block", `${p} — ${reason}`);
+						return { block: true, reason };
+					}
 					const reason = checkWrite(p);
-					if (reason) return { block: true, reason };
+					if (reason) {
+						if (obs) recordObsEvent(obs.cwd, obs, "write-block", `${p} — ${reason}`);
+						return { block: true, reason };
+					}
 				}
 				return undefined;
 			});
@@ -135,6 +151,8 @@ export interface AgentSessionOptions {
 	nudgePrompt: string;
 	/** Whether the run's result tool has been called (skips the nudge). */
 	reported: () => boolean;
+	/** When set, nudges and budget aborts are persisted to .gloop/observe.jsonl. */
+	obs?: ObsContext;
 }
 
 /**
@@ -219,6 +237,7 @@ export async function runAgentSession(opts: AgentSessionOptions): Promise<Sessio
 		await session.prompt(opts.prompt);
 		if (!opts.reported() && !abortedBy) {
 			// One nudge: the model stopped without reporting.
+			if (opts.obs) recordObsEvent(cwd, opts.obs, "nudge", "agent stopped without calling its report tool");
 			await session.prompt(opts.nudgePrompt);
 		}
 	} catch (err) {
@@ -231,6 +250,9 @@ export async function runAgentSession(opts: AgentSessionOptions): Promise<Sessio
 	}
 
 	result.abortedBy = abortedBy;
+	if (opts.obs && abortedBy && abortedBy !== "signal") {
+		recordObsEvent(cwd, opts.obs, "budget-abort", `aborted by ${abortedBy} budget`);
+	}
 	return result;
 }
 
@@ -288,16 +310,18 @@ export async function runWorker(issue: IssueDetail, config: GloopConfig, cwd: st
 		},
 	});
 
+	const obs: ObsContext = { session: "worker", issue: issue.number };
 	const result = await runAgentSession({
 		cwd,
 		config,
 		systemPrompt: loadSystemPrompt(cwd),
 		tools: ["read", "bash", "edit", "write", "grep", "find", "ls", "report_result"],
 		customTools: [reportTool],
-		guard: guardExtension(),
+		guard: guardExtension(checkBashCommand, checkWritePath, { cwd, ...obs }),
 		prompt: buildIssuePrompt(issue, config),
 		nudgePrompt: NUDGE_PROMPT,
 		reported: () => report !== undefined,
+		obs,
 	});
 
 	return { ...result, report };

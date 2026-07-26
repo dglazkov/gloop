@@ -4,6 +4,7 @@ import { type GloopConfig, LABELS } from "./config.js";
 import { CHECKLIST_MARKER } from "./epic.js";
 import * as github from "./github.js";
 import type { IssueDetail } from "./github.js";
+import type { ObsContext } from "./obslog.js";
 import { buildDesignPrompt, DESIGN_NUDGE_PROMPT, loadDesignPrompt } from "./prompts.js";
 import { info } from "./render.js";
 import { checkReadOnlyBashCommand, PRIORITY_LABEL_DEFS } from "./triage.js";
@@ -211,16 +212,18 @@ export async function runDesign(issue: IssueDetail, config: GloopConfig, cwd: st
 		},
 	});
 
+	const obs: ObsContext = { session: "design", issue: issue.number };
 	const result = await runAgentSession({
 		cwd,
 		config,
 		systemPrompt: loadDesignPrompt(cwd),
 		tools: ["read", "bash", "grep", "find", "ls", "design_result"],
 		customTools: [designTool],
-		guard: guardExtension(checkDesignBashCommand, "block-all"),
+		guard: guardExtension(checkDesignBashCommand, "block-all", { cwd, ...obs }),
 		prompt: buildDesignPrompt(issue, config),
 		nudgePrompt: DESIGN_NUDGE_PROMPT,
 		reported: () => report !== undefined,
+		obs,
 	});
 
 	return { ...result, report };
