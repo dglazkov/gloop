@@ -169,3 +169,76 @@ export function buildTriagePrompt(issues: Issue[], config: GloopConfig): string 
 /** One nudge if the triage agent stops without reporting. */
 export const TRIAGE_NUDGE_PROMPT =
 	"You stopped without calling the triage_result tool. You MUST call triage_result now with your proposed changes (an empty entries list is valid if nothing needs changing).";
+
+export const DEFAULT_DESIGN_PROMPT = `You are gloop's design agent — an architect, not an implementer. You are
+given a single GitHub issue that is too broad for one implementation session.
+Your job is to design the solution and decompose it into independently
+shippable sub-issues. There is NO human available: never ask questions. Make
+reasonable architectural decisions and record them in your design doc.
+
+This session is strictly read-only. Explore the codebase deeply — read files,
+search, run read-only git/gh commands — to ground every decision in what the
+code actually does. Never modify files; any mutating command will be blocked.
+
+## What to produce
+
+1. **A design doc** (markdown): state the problem, lay out 2–3 seriously
+   considered approaches with trade-offs, then the chosen approach and why.
+   Do not rationalize the first idea that comes to mind — weigh real
+   alternatives.
+2. **Sub-issues**: the smallest set of independently shippable sub-issues
+   that together implement the chosen approach. Each body must be fully
+   self-contained — context, what to do, acceptance criteria, and pointers
+   to relevant code — because a fresh agent with no memory of this session
+   will implement it. Set \`order\` so prerequisites come first (1 = first).
+
+## Hard rules
+
+- Never modify files, never run mutating git/gh commands.
+- Do NOT file issues yourself with \`gh issue create\`; declare sub-issues
+  via the design_result tool — gloop files them.
+- Finish by calling the \`design_result\` tool exactly once, as your last
+  action. This is MANDATORY — it is the only valid way to finish.`;
+
+/** Load .gloop/DESIGN.md override if present, else the default. */
+export function loadDesignPrompt(cwd: string): string {
+	const override = path.join(cwd, ".gloop", "DESIGN.md");
+	if (fs.existsSync(override)) {
+		return fs.readFileSync(override, "utf8");
+	}
+	return DEFAULT_DESIGN_PROMPT;
+}
+
+export function buildDesignPrompt(issue: IssueDetail, config: GloopConfig): string {
+	const lines: string[] = [];
+	lines.push(`Design and decompose GitHub issue #${issue.number} in this repository.`);
+	lines.push("");
+	lines.push(`# Issue #${issue.number}: ${issue.title}`);
+	lines.push("");
+	lines.push(issue.body || "(no description)");
+	if (issue.labels.length > 0) {
+		lines.push("");
+		lines.push(`Labels: ${issue.labels.join(", ")}`);
+	}
+	if (issue.comments.length > 0) {
+		lines.push("");
+		lines.push("## Comments");
+		for (const c of issue.comments) {
+			lines.push("");
+			lines.push(`### ${c.author} (${c.createdAt})`);
+			lines.push(c.body);
+		}
+	}
+	lines.push("");
+	lines.push("## Budget");
+	lines.push(
+		`You have at most ${config.maxTurnsPerIssue} turns and ~${config.maxMinutesPerIssue} minutes of wall-clock time. Prefer at most ${config.maxFollowUps} sub-issues; only the first ${config.maxFollowUps} (by order) are filed as issues, the rest are recorded as text for a human.`,
+	);
+	lines.push("");
+	lines.push("When finished, call the design_result tool.");
+	return lines.join("\n");
+}
+
+/** One nudge if the design agent stops without reporting. */
+export const DESIGN_NUDGE_PROMPT =
+	"You stopped without calling the design_result tool. You MUST call design_result now with your design doc and the ordered sub-issue decomposition.";

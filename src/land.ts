@@ -7,7 +7,7 @@ import * as github from "./github.js";
 import type { IssueDetail } from "./github.js";
 import { attemptsMarker } from "./queue.js";
 import { c, info, warn } from "./render.js";
-import type { WorkReport, WorkResult } from "./worker.js";
+import type { SessionRunResult, WorkReport, WorkResult } from "./worker.js";
 
 export interface LandOutcome {
 	kind: "landed" | "split" | "blocked" | "failed";
@@ -54,7 +54,7 @@ export async function verify(config: GloopConfig, cwd: string): Promise<{ ok: bo
 	return { ok: true };
 }
 
-function runSummary(result: WorkResult): string {
+function runSummary(result: SessionRunResult): string {
 	const parts = [`turns: ${result.turns}`, `cost: $${result.cost.toFixed(2)}`];
 	if (result.sessionId) parts.push(`session: ${result.sessionId}`);
 	return parts.join(" · ");
@@ -187,7 +187,7 @@ export async function landBlocked(
 export async function recordFailure(
 	issue: IssueDetail,
 	reason: string,
-	result: WorkResult,
+	result: SessionRunResult,
 	attempts: number,
 	config: GloopConfig,
 	cwd: string,
