@@ -140,6 +140,8 @@ export const LABELS = {
 	needsHuman: "gloop:needs-human",
 	next: "gloop:next",
 	filed: "gloop:filed",
+	design: "gloop:design",
+	epic: "gloop:epic",
 } as const;
 
 export const LABEL_DEFS: Array<{ name: string; color: string; description: string }> = [
@@ -148,4 +150,6 @@ export const LABEL_DEFS: Array<{ name: string; color: string; description: strin
 	{ name: LABELS.needsHuman, color: "D93F0B", description: "Needs a human decision or repeated failures" },
 	{ name: LABELS.next, color: "0E8A16", description: "Human override: work this next" },
 	{ name: LABELS.filed, color: "C5DEF5", description: "Issue filed by gloop" },
+	{ name: LABELS.design, color: "5319E7", description: "Needs a design/decomposition session before implementation" },
+	{ name: LABELS.epic, color: "3E4B9E", description: "Tracking issue decomposed into sub-issues; not directly workable" },
 ];

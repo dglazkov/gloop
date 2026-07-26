@@ -1,18 +1,11 @@
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { GloopConfig } from "./config.js";
+import { type GloopConfig, LABELS } from "./config.js";
 import * as github from "./github.js";
 import type { Issue } from "./github.js";
-import { fileFollowUps } from "./land.js";
 import { buildTriagePrompt, loadTriagePrompt, TRIAGE_NUDGE_PROMPT } from "./prompts.js";
 import { c, info } from "./render.js";
-import {
-	checkBashCommand,
-	type FollowUp,
-	guardExtension,
-	runAgentSession,
-	type SessionRunResult,
-} from "./worker.js";
+import { checkBashCommand, guardExtension, runAgentSession, type SessionRunResult } from "./worker.js";
 
 export type TriagePriority = "critical" | "high" | "medium" | "low";
 
@@ -21,7 +14,7 @@ export interface TriageEntry {
 	issue: number;
 	priority?: TriagePriority;
 	duplicateOf?: number;
-	followUps?: FollowUp[];
+	needsDesign?: boolean;
 	reason?: string;
 }
 
@@ -96,7 +89,10 @@ const PRIORITY_LABELS = new Set([
 export type TriageOp =
 	| { kind: "label"; issue: number; add: string; remove: string[] }
 	| { kind: "duplicate"; issue: number; of: number }
-	| { kind: "decompose"; issue: number; followUps: FollowUp[] };
+	| { kind: "design"; issue: number };
+
+/** Labels that make a `needsDesign` mark a no-op: already routed or awaiting a human. */
+const DESIGN_SKIP_LABELS = new Set<string>([LABELS.design, LABELS.epic, LABELS.needsHuman]);
 
 export interface TriagePlan {
 	ops: TriageOp[];
@@ -105,10 +101,10 @@ export interface TriagePlan {
 
 /**
  * Map the triage agent's entries onto concrete label/issue operations.
- * Pure: validates against the scanned open issues, drops no-ops (priority
- * already correct), and caps decompositions at maxFollowUps.
+ * Pure: validates against the scanned open issues and drops no-ops (priority
+ * already correct, design label already routed).
  */
-export function planTriage(entries: TriageEntry[], issues: Issue[], maxFollowUps: number): TriagePlan {
+export function planTriage(entries: TriageEntry[], issues: Issue[]): TriagePlan {
 	const byNumber = new Map(issues.map((i) => [i.number, i]));
 	const ops: TriageOp[] = [];
 	const skipped: TriagePlan["skipped"] = [];
@@ -145,8 +141,13 @@ export function planTriage(entries: TriageEntry[], issues: Issue[], maxFollowUps
 			}
 		}
 
-		if (entry.followUps && entry.followUps.length > 0) {
-			ops.push({ kind: "decompose", issue: entry.issue, followUps: entry.followUps.slice(0, maxFollowUps) });
+		if (entry.needsDesign) {
+			const existing = issue.labels.find((l) => DESIGN_SKIP_LABELS.has(l.toLowerCase()));
+			if (existing) {
+				skipped.push({ issue: entry.issue, reason: `already labeled ${existing}` });
+			} else {
+				ops.push({ kind: "design", issue: entry.issue });
+			}
 		}
 	}
 
@@ -170,9 +171,8 @@ export function printTriagePlan(plan: TriagePlan): void {
 				case "duplicate":
 					console.log(`  #${op.issue} → comment: duplicate of #${op.of}`);
 					break;
-				case "decompose":
-					console.log(`  #${op.issue} → decompose into ${op.followUps.length} issue(s):`);
-					for (const fu of op.followUps) console.log(`      - ${fu.title}`);
+				case "design":
+					console.log(`  #${op.issue} → needs design session (${LABELS.design})`);
 					break;
 			}
 		}
@@ -191,8 +191,8 @@ const PRIORITY_LABEL_DEFS: Array<{ name: string; color: string; description: str
 	{ name: "priority:low", color: "C2E0C6", description: "Nice-to-have" },
 ];
 
-/** Apply a triage plan via gh: labels, duplicate comments, decomposition issues. */
-export async function applyTriagePlan(plan: TriagePlan, config: GloopConfig, cwd: string): Promise<void> {
+/** Apply a triage plan via gh: labels, duplicate comments, design marks. */
+export async function applyTriagePlan(plan: TriagePlan, cwd: string): Promise<void> {
 	const needsPriorityLabels = plan.ops.some((op) => op.kind === "label");
 	if (needsPriorityLabels) {
 		for (const def of PRIORITY_LABEL_DEFS) {
@@ -214,23 +214,10 @@ export async function applyTriagePlan(plan: TriagePlan, config: GloopConfig, cwd
 				);
 				info(`#${op.issue}: commented duplicate of #${op.of}`);
 				break;
-			case "decompose": {
-				const parent = await github.viewIssue(cwd, op.issue);
-				const filed = await fileFollowUps(
-					{ outcome: "split", summary: "", followUps: op.followUps },
-					parent,
-					config,
-					cwd,
-				);
-				const list = filed.map((n) => `#${n}`).join(", ");
-				await github.commentOnIssue(
-					cwd,
-					op.issue,
-					`🧩 gloop triage decomposed this issue into: ${list}. Consider closing this issue in favor of them.`,
-				);
-				info(`#${op.issue}: decomposed into ${list}`);
+			case "design":
+				await github.addLabels(cwd, op.issue, [LABELS.design]);
+				info(`#${op.issue}: marked ${LABELS.design}`);
 				break;
-			}
 		}
 	}
 }
@@ -259,17 +246,11 @@ export async function runTriage(issues: Issue[], config: GloopConfig, cwd: strin
 					duplicateOf: Type.Optional(
 						Type.Number({ description: "Open issue number this issue duplicates (prefer the older/richer one)" }),
 					),
-					followUps: Type.Optional(
-						Type.Array(
-							Type.Object({
-								title: Type.String({ description: "Concise, actionable issue title" }),
-								body: Type.String({
-									description: "Self-contained issue body: context, what to do, acceptance criteria, code pointers",
-								}),
-								labels: Type.Optional(Type.Array(Type.String())),
-							}),
-							{ description: "Decomposition: sub-issues to file when the issue is too large for one session" },
-						),
+					needsDesign: Type.Optional(
+						Type.Boolean({
+							description:
+								"True when this issue is too large/ambiguous for one implementation session and needs a design pass first",
+						}),
 					),
 					reason: Type.Optional(Type.String({ description: "One-line rationale for this decision" })),
 				}),

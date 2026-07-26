@@ -353,7 +353,7 @@ async function commandTriage(args: CliArgs, cwd: string): Promise<void> {
 	if (!result.report) throw new Error("triage agent never called triage_result");
 	if (result.report.summary) info(result.report.summary);
 
-	const plan = planTriage(result.report.entries, issues, config.maxFollowUps);
+	const plan = planTriage(result.report.entries, issues);
 	printTriagePlan(plan);
 	if (plan.ops.length === 0) return;
 
@@ -361,8 +361,8 @@ async function commandTriage(args: CliArgs, cwd: string): Promise<void> {
 		info("dry run — re-run with --apply to make these changes");
 		return;
 	}
-	await github.ensureLabels(cwd); // gloop:filed for decomposition issues
-	await applyTriagePlan(plan, config, cwd);
+	await github.ensureLabels(cwd); // gloop:design for design marks
+	await applyTriagePlan(plan, cwd);
 	info(`applied ${plan.ops.length} change(s)`);
 }
 

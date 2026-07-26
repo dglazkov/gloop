@@ -6,7 +6,7 @@ Usage:
   gloop [options]           work the issue queue until empty or budget hit
   gloop status              show queue order and gloop-labeled issue states
   gloop triage [--apply]    agent pass over open issues: propose priority labels,
-                            duplicates, and decompositions (dry-run unless --apply)
+                            duplicates, and design marks (dry-run unless --apply)
 
 Options:
   --once                    work one issue, then exit
