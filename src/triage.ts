@@ -50,26 +50,31 @@ const GIT_READONLY = new Set([
 const GH_READONLY = new Set(["issue list", "issue view", "issue status", "label list", "auth status", "status"]);
 
 /**
- * Triage sessions are read-only: on top of the standard worker guard, every
- * git/gh invocation must be an explicitly allow-listed read command.
+ * Read-only sessions (triage, design): on top of the standard worker guard,
+ * every git/gh invocation must be an explicitly allow-listed read command.
+ * `session` names the session in block messages.
  * Returns a human-readable block reason, or undefined if allowed.
  */
-export function checkTriageBashCommand(command: string): string | undefined {
+export function checkReadOnlyBashCommand(command: string, session: string): string | undefined {
 	const base = checkBashCommand(command);
 	if (base) return base;
 	for (const m of command.matchAll(/\bgit\s+(?:-\S+\s+)*([\w-]+)/g)) {
 		if (!GIT_READONLY.has(m[1])) {
-			return `gloop guard: triage is read-only (git ${m[1]} is not an allowed read command)`;
+			return `gloop guard: ${session} is read-only (git ${m[1]} is not an allowed read command)`;
 		}
 	}
 	for (const m of command.matchAll(/\bgh\s+([\w-]+)(?:\s+([\w-]+))?/g)) {
 		const two = m[2] ? `${m[1]} ${m[2]}` : m[1];
 		if (m[1] === "search") continue;
 		if (!GH_READONLY.has(two) && !GH_READONLY.has(m[1])) {
-			return `gloop guard: triage is read-only (gh ${two} is not an allowed read command)`;
+			return `gloop guard: ${session} is read-only (gh ${two} is not an allowed read command)`;
 		}
 	}
 	return undefined;
+}
+
+export function checkTriageBashCommand(command: string): string | undefined {
+	return checkReadOnlyBashCommand(command, "triage");
 }
 
 /* ----------------------------------------------------------------- plan --- */
@@ -184,7 +189,7 @@ export function printTriagePlan(plan: TriagePlan): void {
 
 /* ---------------------------------------------------------------- apply --- */
 
-const PRIORITY_LABEL_DEFS: Array<{ name: string; color: string; description: string }> = [
+export const PRIORITY_LABEL_DEFS: Array<{ name: string; color: string; description: string }> = [
 	{ name: "priority:critical", color: "B60205", description: "Work this before anything else" },
 	{ name: "priority:high", color: "D93F0B", description: "Core functionality gap or widespread bug" },
 	{ name: "priority:medium", color: "FBCA04", description: "Valuable improvement, non-blocking" },

@@ -6,7 +6,7 @@ export interface RunRecord {
 	/** ISO 8601 timestamp of when the record was written. */
 	timestamp: string;
 	issue: number;
-	kind: "landed" | "split" | "blocked" | "failed" | "aborted";
+	kind: "landed" | "split" | "designed" | "blocked" | "failed" | "aborted";
 	detail: string;
 	turns: number;
 	cost: number;

@@ -4,15 +4,16 @@ import * as path from "node:path";
 import { type CliArgs, HELP, parseArgs } from "./args.js";
 import { ConsecutiveFailureBreaker } from "./breaker.js";
 import { type GloopConfig, LABELS, loadConfig } from "./config.js";
+import { applyDesignResult, designFailureReason, getDepth, MAX_DESIGN_DEPTH, runDesign } from "./design.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, type LandOutcome, recordFailure } from "./land.js";
 import { appendRun, readRuns, type RunRecord, totalCost } from "./ledger.js";
-import { buildQueue, decideLeaseReclaim, decidePreClaim, getAttempts, issuePriority, leaseMarker } from "./queue.js";
+import { buildQueue, decideLeaseReclaim, decidePreClaim, getAttempts, issuePriority, leaseMarker, sortQueue } from "./queue.js";
 import { banner, c, error, formatCost, info, warn } from "./render.js";
 import { applyTriagePlan, planTriage, printTriagePlan, runTriage } from "./triage.js";
 import { getVersion } from "./version.js";
-import { runWorker, type WorkResult } from "./worker.js";
+import { runWorker, type SessionRunResult, type WorkResult } from "./worker.js";
 
 function stopRequested(cwd: string): boolean {
 	return fs.existsSync(path.join(cwd, ".gloop", "STOP"));
@@ -149,6 +150,76 @@ async function workOneIssue(
 }
 
 /**
+ * Handle one gloop:design issue: escalate over-deep issues to a human,
+ * otherwise run a read-only design session and apply its result (design-doc
+ * comment, filed sub-issues, checklist, gloop:design → gloop:epic).
+ */
+async function designOneIssue(
+	issueNumber: number,
+	config: GloopConfig,
+	cwd: string,
+): Promise<{ kind: string; result?: SessionRunResult }> {
+	const issue = await github.viewIssue(cwd, issueNumber);
+	banner(`#${issue.number}: ${issue.title} ${c.dim("(design)")}`);
+
+	// Depth guard: refuse to decompose a decomposition of a decomposition.
+	const depth = getDepth(issue.body);
+	if (depth >= MAX_DESIGN_DEPTH) {
+		warn(`#${issue.number}: design depth ${depth} reached the limit; escalating to a human`);
+		await github.commentOnIssue(
+			cwd,
+			issue.number,
+			`🔴 gloop: this issue is already ${depth} level(s) deep in design decomposition; refusing to decompose further. A human should scope it. Marking \`${LABELS.needsHuman}\`.`,
+		);
+		await github.addLabels(cwd, issue.number, [LABELS.needsHuman]);
+		await github.removeLabels(cwd, issue.number, [LABELS.design]);
+		return { kind: "escalated" };
+	}
+
+	const attempts = getAttempts(issue.comments);
+	info(`design attempt ${attempts + 1}/${config.maxAttempts}`);
+
+	// Claim (lease), same protocol as implementation work: marker first, then label.
+	await github.commentOnIssue(
+		cwd,
+		issue.number,
+		`${leaseMarker()}\n🤖 gloop claimed this issue for a design session (attempt ${attempts + 1}/${config.maxAttempts}).`,
+	);
+	await github.addLabels(cwd, issue.number, [LABELS.inProgress]);
+
+	try {
+		const result = await runDesign(issue, config, cwd);
+		info(`agent finished · ${result.turns} turns · ${formatCost(result.cost)}`);
+
+		if (result.abortedBy === "signal") {
+			info("outcome: aborted — interrupted by user");
+			return { kind: "aborted", result };
+		}
+
+		const failure = designFailureReason(result);
+		const outcome =
+			failure !== undefined || !result.report
+				? await recordFailure(issue, failure ?? "agent never called design_result", result, attempts, config, cwd)
+				: await applyDesignResult(issue, result.report, result, config, cwd);
+
+		const color = outcome.kind === "designed" ? c.green : c.red;
+		info(`outcome: ${color(outcome.kind)} — ${outcome.detail}`);
+		appendRun(cwd, {
+			timestamp: new Date().toISOString(),
+			issue: issue.number,
+			kind: outcome.kind,
+			detail: outcome.detail,
+			turns: result.turns,
+			cost: result.cost,
+			sessionId: result.sessionId,
+		});
+		return { kind: outcome.kind, result };
+	} finally {
+		await github.removeLabels(cwd, issue.number, [LABELS.inProgress]);
+	}
+}
+
+/**
  * Best-effort recovery after workOneIssue threw: make sure the tree is back on
  * the default branch, the in-progress label is gone, and a failed attempt is
  * recorded so attempt tracking / gloop:needs-human escalation still works.
@@ -228,30 +299,83 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 		}
 
 		let target: number | undefined = args.issue;
+		let designTarget: number | undefined;
 		if (target === undefined) {
 			const [issues, linkedPrIssues] = await Promise.all([
 				github.listOpenIssues(cwd),
 				github.listIssueNumbersWithLinkedPr(cwd),
 			]);
 			await reclaimStaleLeases(issues, config, cwd, args.dryRun);
+			// Design issues are handled before the implementation queue: decomposing
+			// a Big Fish unblocks more implementable work.
+			const designQueue = sortQueue(
+				issues.filter(
+					(i) =>
+						i.labels.includes(LABELS.design) &&
+						!i.labels.includes(LABELS.inProgress) &&
+						!i.labels.includes(LABELS.needsHuman) &&
+						(!config.label || i.labels.includes(config.label)),
+				),
+			);
 			const excluded = new Set([...linkedPrIssues, ...handledThisRun]);
 			const queue = buildQueue(issues, config, excluded);
-			if (queue.length === 0) {
+			if (queue.length === 0 && designQueue.length === 0) {
 				info(worked === 0 ? "no eligible open issues" : `queue empty · worked ${worked} issue(s) · ${formatCost(totalCost)}`);
 				break;
 			}
 			if (args.dryRun) {
+				if (designQueue.length > 0) {
+					info(`design queue (${designQueue.length}):`);
+					for (const [i, iss] of designQueue.entries()) {
+						console.log(`  ${i + 1}. #${iss.number} ${iss.title} ${c.dim(iss.labels.join(","))}`);
+					}
+				}
 				info(`queue (${queue.length}):`);
 				for (const [i, iss] of queue.entries()) {
 					console.log(`  ${i + 1}. #${iss.number} [p${issuePriority(iss)}] ${iss.title} ${c.dim(iss.labels.join(","))}`);
 				}
 				return;
 			}
-			target = queue[0].number;
+			if (designQueue.length > 0) {
+				designTarget = designQueue[0].number;
+			} else {
+				target = queue[0].number;
+			}
 		} else if (args.dryRun) {
 			info(`would work #${target}`);
 			return;
 		}
+
+		if (designTarget !== undefined) {
+			let kind: string;
+			let result: SessionRunResult | undefined;
+			try {
+				({ kind, result } = await designOneIssue(designTarget, config, cwd));
+				breaker.recordSuccess();
+			} catch (err) {
+				const reason = err instanceof Error ? err.message : String(err);
+				error(`#${designTarget}: unexpected error — ${reason}`);
+				await recoverFromCrashedIssue(designTarget, reason, config, cwd, defaultBranch);
+				worked += 1;
+				if (breaker.recordFailure()) {
+					error("two consecutive issues failed with unexpected errors; stopping the run");
+					break;
+				}
+				if (args.once) break;
+				continue;
+			}
+			if (kind === "escalated") {
+				// Depth guard: no agent session ran; the label swap keeps it out of later scans.
+				if (args.once) break;
+				continue;
+			}
+			worked += 1;
+			totalCost += result?.cost ?? 0;
+			if (kind === "aborted") break;
+			if (args.once) break;
+			continue;
+		}
+		if (target === undefined) break; // unreachable: the design branch above always breaks or continues
 
 		let kind: string;
 		let result: WorkResult | undefined;
@@ -370,7 +494,12 @@ const RECENT_RUNS = 10;
 
 function formatRun(run: RunRecord): string {
 	const when = run.timestamp.replace("T", " ").slice(0, 16);
-	const color = run.kind === "landed" || run.kind === "split" ? c.green : run.kind === "failed" ? c.red : c.yellow;
+	const color =
+		run.kind === "landed" || run.kind === "split" || run.kind === "designed"
+			? c.green
+			: run.kind === "failed"
+				? c.red
+				: c.yellow;
 	const extra = run.prUrl ? ` ${c.dim(run.prUrl)}` : ` ${c.dim(run.detail)}`;
 	return `${c.dim(when)}  #${run.issue} ${color(run.kind)} ${formatCost(run.cost)}${extra}`;
 }
