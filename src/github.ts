@@ -114,6 +114,16 @@ export async function viewIssue(cwd: string, num: number): Promise<IssueDetail> 
 	};
 }
 
+/**
+ * State ("OPEN" / "CLOSED") of any issue, open or closed. Backed by the
+ * read-after-write consistent view endpoint (not search), so it is safe for
+ * lifecycle decisions like closing an epic.
+ */
+export async function getIssueState(cwd: string, num: number): Promise<string> {
+	const out = await run("gh", ["issue", "view", String(num), "--json", "state"], { cwd });
+	return JSON.parse(out).state as string;
+}
+
 export async function addLabels(cwd: string, num: number, labels: string[]): Promise<void> {
 	await run("gh", ["issue", "edit", String(num), ...labels.flatMap((l) => ["--add-label", l])], { cwd });
 }

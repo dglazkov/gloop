@@ -5,6 +5,7 @@ import { type CliArgs, HELP, parseArgs } from "./args.js";
 import { ConsecutiveFailureBreaker } from "./breaker.js";
 import { type GloopConfig, LABELS, loadConfig } from "./config.js";
 import { applyDesignResult, designFailureReason, getDepth, MAX_DESIGN_DEPTH, runDesign } from "./design.js";
+import { sweepEpics } from "./epic.js";
 import * as git from "./git.js";
 import * as github from "./github.js";
 import { landBlocked, landDone, landSplit, type LandOutcome, recordFailure } from "./land.js";
@@ -306,6 +307,7 @@ async function commandRun(args: CliArgs, cwd: string): Promise<void> {
 				github.listIssueNumbersWithLinkedPr(cwd),
 			]);
 			await reclaimStaleLeases(issues, config, cwd, args.dryRun);
+			await sweepEpics(issues, cwd, args.dryRun);
 			// Design issues are handled before the implementation queue: decomposing
 			// a Big Fish unblocks more implementable work.
 			const designQueue = sortQueue(
