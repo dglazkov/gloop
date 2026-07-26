@@ -28,6 +28,9 @@ export function isEligible(issue: Issue, config: GloopConfig, linkedPrIssues?: R
 	if (labels.includes(LABELS.blocked)) return false;
 	if (labels.includes(LABELS.needsHuman)) return false;
 	if (labels.includes(LABELS.inProgress)) return false;
+	// Epics are tracking issues; design-labeled issues await a design session, not ordinary work.
+	if (labels.includes(LABELS.epic)) return false;
+	if (labels.includes(LABELS.design)) return false;
 	if (config.label && !labels.includes(config.label)) return false;
 	// An open linked PR means work already landed and is awaiting merge; re-picking would duplicate it.
 	if (linkedPrIssues?.has(issue.number)) return false;

@@ -118,11 +118,12 @@ command will be blocked.
    Skip issues whose existing priority label is already right.
 2. **Duplicates**: if an issue substantially overlaps an earlier open issue,
    mark it as a duplicate of that issue (prefer keeping the older/richer one).
-3. **Decomposition**: if an issue is clearly too large for a single focused
-   agent session, propose follow-up issues that decompose it. Each follow-up
-   must be self-contained: context, what to do, acceptance criteria, and code
-   pointers. Only decompose when genuinely oversized — most issues should not
-   be decomposed.
+3. **Scope**: mark an issue \`needsDesign\` when it clearly cannot be
+   completed in one focused agent session. Signals: touches multiple
+   subsystems, requires architectural or API decisions, has no single
+   acceptance test, or is a list of loosely related work. A dedicated design
+   session will decompose it later — do NOT propose sub-issues yourself.
+   Most issues should NOT be marked.
 
 ## Hard rules
 
@@ -158,7 +159,7 @@ export function buildTriagePrompt(issues: Issue[], config: GloopConfig): string 
 	lines.push("");
 	lines.push("## Budget");
 	lines.push(
-		`You have at most ${config.maxTurnsPerIssue} turns and ~${config.maxMinutesPerIssue} minutes for the whole pass. Each decomposed issue may declare at most ${config.maxFollowUps} follow-up issues. Work efficiently.`,
+		`You have at most ${config.maxTurnsPerIssue} turns and ~${config.maxMinutesPerIssue} minutes for the whole pass. Work efficiently.`,
 	);
 	lines.push("");
 	lines.push("When finished, call the triage_result tool.");

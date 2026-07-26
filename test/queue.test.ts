@@ -33,6 +33,16 @@ test("isEligible filters gloop state labels", () => {
 	assert.equal(isEligible(issue(2, [LABELS.blocked]), DEFAULT_CONFIG), false);
 	assert.equal(isEligible(issue(3, [LABELS.needsHuman]), DEFAULT_CONFIG), false);
 	assert.equal(isEligible(issue(4, [LABELS.inProgress]), DEFAULT_CONFIG), false);
+	assert.equal(isEligible(issue(5, [LABELS.epic]), DEFAULT_CONFIG), false);
+	assert.equal(isEligible(issue(6, [LABELS.design]), DEFAULT_CONFIG), false);
+});
+
+test("buildQueue never selects gloop:epic or gloop:design issues", () => {
+	const issues = [issue(1, [LABELS.epic, "priority:critical"]), issue(2, [LABELS.design]), issue(3)];
+	assert.deepEqual(
+		buildQueue(issues, DEFAULT_CONFIG).map((i) => i.number),
+		[3],
+	);
 });
 
 test("isEligible excludes issues with an open linked PR", () => {
