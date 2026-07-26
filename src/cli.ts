@@ -118,7 +118,7 @@ async function workOneIssue(
 				outcome = await recordFailure(issue, outcome.detail, result, attempts, config, cwd);
 			}
 		} else if (result.report.outcome === "split") {
-			outcome = await landSplit(issue, result.report, result, config, cwd);
+			outcome = await landSplit(issue, result.report, result, cwd);
 			await git.abandonBranch(cwd, branch, defaultBranch);
 			if (outcome.kind === "failed") {
 				outcome = await recordFailure(issue, outcome.detail, result, attempts, config, cwd);
