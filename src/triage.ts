@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { type GloopConfig, LABELS } from "./config.js";
 import * as github from "./github.js";
 import type { Issue } from "./github.js";
+import type { ObsContext } from "./obslog.js";
 import { buildTriagePrompt, loadTriagePrompt, TRIAGE_NUDGE_PROMPT } from "./prompts.js";
 import { c, info } from "./render.js";
 import { checkBashCommand, guardExtension, runAgentSession, type SessionRunResult } from "./worker.js";
@@ -271,16 +272,18 @@ export async function runTriage(issues: Issue[], config: GloopConfig, cwd: strin
 		},
 	});
 
+	const obs: ObsContext = { session: "triage" };
 	const result = await runAgentSession({
 		cwd,
 		config,
 		systemPrompt: loadTriagePrompt(cwd),
 		tools: ["read", "bash", "grep", "find", "ls", "triage_result"],
 		customTools: [triageTool],
-		guard: guardExtension(checkTriageBashCommand, "block-all"),
+		guard: guardExtension(checkTriageBashCommand, "block-all", { cwd, ...obs }),
 		prompt: buildTriagePrompt(issues, config),
 		nudgePrompt: TRIAGE_NUDGE_PROMPT,
 		reported: () => report !== undefined,
+		obs,
 	});
 
 	return { ...result, report };
